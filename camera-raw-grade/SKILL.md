@@ -34,6 +34,15 @@ python3 "$SKILL_DIR/scripts/develop.py" photo.nef -o out.jpg --look natural --pr
 
 ## Workflow
 
+### 0. Cull & Evaluate (Optional, M4 GPU)
+
+When working through a large shoot, evaluate and rank photos first using M4 GPU acceleration to pick the keepers before developing:
+
+```bash
+python3 "$SKILL_DIR/scripts/eval_raw.py" path/to/folder --preset landscape
+python3 "$SKILL_DIR/scripts/eval_raw.py" path/to/folder --filter S,A --organize ./selected
+```
+
 ### 1. Inventory
 
 Find the files. Typical names: `IMG_1234.CR2`, `IMG_1234.CR3` (Canon), `DSC_1234.NEF` (Nikon), `DSC01234.ARW` (Sony), `DSCF1234.RAF` (Fujifilm), `P1234567.RW2` (Panasonic), `_1234.ORF` (Olympus/OM), `IMG1234.PEF` (Pentax), `L1234567.DNG` (Leica).
