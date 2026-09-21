@@ -32,6 +32,15 @@ python3 "$SKILL_DIR/scripts/develop.py" photo.dng -o out.jpg --look natural --pr
 
 ## Workflow
 
+### 0. Cull & Evaluate (Optional, M4 GPU)
+
+When working through a shoot of phone DNGs / ProRAW, evaluate and rank them first using M4 GPU acceleration:
+
+```bash
+python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --preset general
+python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --filter S,A --organize ./selected
+```
+
 ### 1. Inventory
 
 Find the files. Typical names: `IMG_1234.DNG`, `PXL_20260828_....dng`, `YYYYMMDD_HHMMSS.dng`.

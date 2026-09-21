@@ -1,0 +1,52 @@
+{
+  "general": {
+    "description": "Balanced evaluation across technical sharpness, dynamic range, noise, color, and composition",
+    "weights": {
+      "sharpness": 0.35,
+      "dynamic_range": 0.25,
+      "noise_control": 0.15,
+      "color_harmony": 0.15,
+      "composition": 0.10
+    }
+  },
+  "landscape": {
+    "description": "High priority on dynamic range headroom, fine edge sharpness, and horizon alignment",
+    "weights": {
+      "sharpness": 0.30,
+      "dynamic_range": 0.35,
+      "noise_control": 0.15,
+      "color_harmony": 0.10,
+      "composition": 0.10
+    }
+  },
+  "portrait": {
+    "description": "Prioritizes subject eye/face sharpness and clean skin tones; softer noise penalty",
+    "weights": {
+      "sharpness": 0.35,
+      "dynamic_range": 0.20,
+      "noise_control": 0.20,
+      "color_harmony": 0.15,
+      "composition": 0.10
+    }
+  },
+  "street": {
+    "description": "Focuses on composition, decisive moment contrast, and color vibe; tolerates higher noise",
+    "weights": {
+      "sharpness": 0.25,
+      "dynamic_range": 0.20,
+      "noise_control": 0.10,
+      "color_harmony": 0.20,
+      "composition": 0.25
+    }
+  },
+  "night": {
+    "description": "Strict noise control and highlight protection (city lights/stars) with shadow headroom",
+    "weights": {
+      "sharpness": 0.25,
+      "dynamic_range": 0.30,
+      "noise_control": 0.30,
+      "color_harmony": 0.10,
+      "composition": 0.05
+    }
+  }
+}
