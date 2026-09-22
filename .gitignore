@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+dist/_dmg_staging/
+dist/*.tmp
+dist/temp*
 *.jpg
 *.jpeg
 *.png

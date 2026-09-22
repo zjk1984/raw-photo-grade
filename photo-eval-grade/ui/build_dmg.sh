@@ -41,9 +41,8 @@ fi
 # 2. 检查操作系统与 hdiutil 命令
 OS="$(uname -s)"
 if [ "$OS" != "Darwin" ]; then
-    echo -e "${YELLOW}提示: 当前系统不是 macOS ($OS)。hdiutil 是 macOS 内置专用工具。${NC}"
-    echo -e "${YELLOW}请在你的 MacBook Air M4 上直接执行本脚本生成 .dmg 文件。${NC}"
-    echo -e "${YELLOW}正在退出...${NC}"
+    echo -e "${YELLOW}提示: 当前系统不是 macOS ($OS)，正在使用跨平台生成器构建兼容的 Apple HFS+ DMG...${NC}"
+    python3 "$SCRIPT_DIR/make_dmg.py"
     exit 0
 fi
 
