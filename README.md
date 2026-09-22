@@ -53,6 +53,10 @@ python3 camera-raw-grade/scripts/develop.py ./selected/S/ --out-dir ./edited --l
 
 # 4. Or run the unified automated pipeline (Eval -> Filter -> Develop -> Crop):
 python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look natural --out-dir ./edited --straighten
+
+# 5. Launch the Visual Mac Desktop Application (GUI):
+python3 photo-eval-grade/ui/app.py
+# or: ./photo-eval-grade/ui/launch_app.sh
 ```
 
 See each skill's `SKILL.md` for the full workflow.

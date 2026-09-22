@@ -20,6 +20,7 @@ Scripts live next to this file, plus the shared engine in `shared/scripts/eval_p
 SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 python3 "$SKILL_DIR/scripts/eval.py" path/to/photos/ --device mps
 python3 "$SKILL_DIR/scripts/eval.py" path/to/photos/ --filter S,A --organize ./selected
+python3 "$SKILL_DIR/ui/app.py"  # 启动本地可视化桌面应用 (Mac App 模式)
 ```
 
 ## Hard rules
@@ -74,6 +75,17 @@ python3 "$SKILL_DIR/scripts/eval.py" ./DCIM/ --organize ./curated --organize-met
 
 # Or output clean JSON for scripts / automation:
 python3 "$SKILL_DIR/scripts/eval.py" ./DCIM/ --json --filter S,A > keepers.json
+```
+
+### 3.1 Visual Desktop Mac App (GUI)
+
+Launch the native macOS-styled interactive desktop interface to drag-and-drop photos, view real-time M4 GPU compute status, inspect S/A/B/C cards, and export keepers with one click:
+
+```bash
+# Launch GUI (Native window via pywebview or browser)
+python3 "$SKILL_DIR/ui/app.py"
+# Or run launcher script
+"$SKILL_DIR/ui/launch_app.sh"
 ```
 
 ### 4. Direct Pipeline to Develop & Crop

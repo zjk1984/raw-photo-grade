@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhotoGrade M4 - 本地专业照片评估与分级系统</title>
+  <style>
+    :root {
+      --bg-primary: #121316;
+      --bg-secondary: #1a1c22;
+      --bg-card: #22252e;
+      --bg-hover: #2c303c;
+      --border-color: rgba(255, 255, 255, 0.08);
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --tier-s: #d946ef;
+      --tier-a: #10b981;
+      --tier-b: #06b6d4;
+      --tier-c: #ef4444;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* macOS 风格顶部标题栏 */
+    header {
+      height: 56px;
+      background: rgba(26, 28, 34, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-badge {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #ec4899, #8b5cf6, #3b82f6);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 16px;
+      color: white;
+      box-shadow: 0 4px 12px rgba(139, 92, 246, 0.35);
+    }
+
+    .brand-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .brand-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 8px;
+      border-radius: 12px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .device-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      color: #34d399;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 20px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #10b981;
+    }
+
+    .btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      border: none;
+      color: white;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #60a5fa, #3b82f6);
+    }
+
+    /* 主布局 */
+    .app-body {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 56px);
+      overflow: hidden;
+    }
+
+    /* 左侧控制边栏 */
+    aside {
+      width: 290px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      padding: 20px 16px;
+      gap: 20px;
+      overflow-y: auto;
+    }
+
+    .panel-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    select, input[type="text"] {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      outline: none;
+    }
+
+    select:focus, input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    /* 拖拽上传区域 */
+    .dropzone {
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: var(--radius-md);
+      padding: 20px 12px;
+      text-align: center;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.02);
+      transition: all 0.2s ease;
+    }
+
+    .dropzone.dragover, .dropzone:hover {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.08);
+    }
+
+    .dropzone-icon {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+
+    .dropzone-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-main);
+    }
+
+    .dropzone-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* 统计卡片 */
+    .stats-card {
+      background: var(--bg-card);
+      border-radius: var(--radius-md);
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .tier-stat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+
+    .badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    .badge-s { background: rgba(217, 70, 239, 0.18); color: var(--tier-s); border: 1px solid rgba(217, 70, 239, 0.35); }
+    .badge-a { background: rgba(16, 185, 129, 0.18); color: var(--tier-a); border: 1px solid rgba(16, 185, 129, 0.35); }
+    .badge-b { background: rgba(6, 182, 212, 0.18); color: var(--tier-b); border: 1px solid rgba(6, 182, 212, 0.35); }
+    .badge-c { background: rgba(239, 68, 68, 0.18); color: var(--tier-c); border: 1px solid rgba(239, 68, 68, 0.35); }
+
+    /* 中间图片网格与主工作区 */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-primary);
+      overflow: hidden;
+    }
+
+    .toolbar {
+      height: 48px;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      background: var(--bg-secondary);
+    }
+
+    .filter-tabs {
+      display: flex;
+      gap: 6px;
+    }
+
+    .tab {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .tab:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab.active {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    .grid-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 18px;
+      align-content: flex-start;
+    }
+
+    /* 照片卡片 */
+    .photo-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .photo-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .photo-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent);
+    }
+
+    .thumb-wrap {
+      width: 100%;
+      height: 190px;
+      background: #0d0e12;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .thumb-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.3s ease;
+    }
+
+    .photo-card:hover .thumb-wrap img {
+      transform: scale(1.03);
+    }
+
+    .card-tier-badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      font-weight: 800;
+      font-size: 13px;
+      padding: 3px 9px;
+      border-radius: 6px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+      z-index: 10;
+    }
+
+    .card-score {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      color: white;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+
+    .card-info {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .card-filename {
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 迷你指标进度条 */
+    .mini-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .metric-pill {
+      background: rgba(255, 255, 255, 0.04);
+      padding: 4px 6px;
+      border-radius: 4px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+    }
+
+    .metric-pill span:first-child {
+      color: var(--text-muted);
+    }
+
+    .metric-pill span:last-child {
+      font-weight: 600;
+    }
+
+    .flags-tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 2px;
+    }
+
+    .flag-tag {
+      font-size: 10px;
+      background: rgba(239, 68, 68, 0.15);
+      color: #fca5a5;
+      padding: 1px 6px;
+      border-radius: 3px;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    /* 右侧详细抽屉面板 */
+    .detail-drawer {
+      width: 320px;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    .detail-drawer.hidden {
+      display: none;
+    }
+
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .drawer-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 18px;
+    }
+
+    .preview-box {
+      width: 100%;
+      height: 200px;
+      background: #000;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .preview-box img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    /* 指标雷达条 */
+    .metric-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .metric-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+
+    .progress-bar-bg {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--accent);
+      transition: width 0.4s ease;
+    }
+
+    /* 空状态 */
+    .empty-state {
+      grid-column: 1 / -1;
+      height: 380px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--text-muted);
+    }
+
+    .empty-icon {
+      font-size: 48px;
+      opacity: 0.5;
+    }
+
+    /* 进度遮罩 */
+    .progress-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px);
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    .progress-overlay.hidden {
+      display: none;
+    }
+
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border: 3px solid rgba(255, 255, 255, 0.15);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部 Bar -->
+  <header>
+    <div class="brand">
+      <div class="logo-badge">M4</div>
+      <span class="brand-title">PhotoGrade M4</span>
+      <span class="brand-subtitle">Pro Photo Intelligence</span>
+    </div>
+
+    <div class="header-actions">
+      <div class="device-pill" id="deviceStatus">
+        <span class="dot"></span>
+        <span id="deviceText">Apple M4 MPS (Metal) Ready</span>
+      </div>
+      <button class="btn btn-primary" id="btnRunPipeline">⚡️ 一键调色导出 (S/A 级)</button>
+    </div>
+  </header>
+
+  <!-- 主界面体 -->
+  <div class="app-body">
+    <!-- 左侧控制器 -->
+    <aside>
+      <div class="form-group">
+        <div class="panel-title">照片导入 (RAW / JPEG)</div>
+        <div class="dropzone" id="dropArea">
+          <div class="dropzone-icon">📁</div>
+          <div class="dropzone-text">点击或拖拽照片 / 文件夹</div>
+          <div class="dropzone-sub">支持 NEF, CR3, ARW, DNG, RAF, JPG</div>
+          <input type="file" id="fileInput" multiple accept=".nef,.cr2,.cr3,.arw,.raf,.dng,.orf,.rw2,.jpg,.jpeg,.png" style="display: none;">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div class="panel-title">评估预设权重</div>
+        <select id="presetSelect">
+          <option value="general" selected>通用摄影 (平衡清晰度与动态范围)</option>
+          <option value="landscape">风光摄影 (重宽容度、地平线与细节)</option>
+          <option value="portrait">人像摄影 (重合焦锐度、人像肤色)</option>
+          <option value="street">街头纪实 (重瞬间构图与抓拍反差)</option>
+          <option value="night">夜景深空 (严控暗部噪点与星光溢出)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <div class="panel-title">分级统计</div>
+        <div class="stats-card">
+          <div class="tier-stat-row">
+            <span class="badge badge-s">S 级 (精选/封面)</span>
+            <strong id="countS">0</strong>
+          </div>
+          <div class="tier-stat-row">
+            <span class="badge badge-a">A 级 (交付/优秀)</span>
+            <strong id="countA">0</strong>
+          </div>
+          <div class="tier-stat-row">
+            <span class="badge badge-b">B 级 (备选/微瑕)</span>
+            <strong id="countB">0</strong>
+          </div>
+          <div class="tier-stat-row">
+            <span class="badge badge-c">C 级 (剔除/废片)</span>
+            <strong id="countC">0</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top: auto;">
+        <div class="panel-title">导出操作</div>
+        <button class="btn" id="btnExportKeepers" style="width: 100%; justify-content: center;">📂 归档 S/A 级到文件夹</button>
+      </div>
+    </aside>
+
+    <!-- 中间主视图 -->
+    <main>
+      <div class="toolbar">
+        <div class="filter-tabs">
+          <button class="tab active" data-filter="ALL">全部 (<span id="countAll">0</span>)</button>
+          <button class="tab" data-filter="S">S 级</button>
+          <button class="tab" data-filter="A">A 级</button>
+          <button class="tab" data-filter="B">B 级</button>
+          <button class="tab" data-filter="C">C 级</button>
+        </div>
+        <div style="font-size: 12px; color: var(--text-muted);" id="currentStatsSummary">
+          等待导入照片...
+        </div>
+      </div>
+
+      <div class="grid-container" id="photoGrid">
+        <div class="empty-state">
+          <div class="empty-icon">📷</div>
+          <div style="font-size: 15px; font-weight: 600;">暂无照片</div>
+          <div style="font-size: 13px;">请拖入或选择包含照片的文件夹进行 M4 GPU 智能打分</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 右侧详情抽屉 -->
+    <div class="detail-drawer hidden" id="detailDrawer">
+      <div class="drawer-header">
+        <div class="drawer-title" id="drawerFilename">DSC_0001.NEF</div>
+        <button class="close-btn" id="closeDrawer">&times;</button>
+      </div>
+
+      <div class="preview-box">
+        <img id="drawerThumb" src="" alt="preview">
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <span class="badge" id="drawerTierBadge">S 级</span>
+        <div style="font-size: 20px; font-weight: 800;" id="drawerScore">92.4 <span style="font-size: 12px; color: var(--text-muted); font-weight: normal;">分</span></div>
+      </div>
+
+      <div id="drawerFlags" class="flags-tag-list"></div>
+
+      <div class="panel-title" style="margin-top: 6px;">各项量化指标分解</div>
+
+      <div class="metric-row">
+        <div class="metric-header">
+          <span>清晰度 / 主体合焦</span>
+          <strong id="valSharp">95.0</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="barSharp" style="width: 95%;"></div></div>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric-header">
+          <span>曝光动态范围 / 宽容度</span>
+          <strong id="valDR">88.0</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="barDR" style="width: 88%;"></div></div>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric-header">
+          <span>噪点控制 / 纯净度</span>
+          <strong id="valNoise">92.0</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="barNoise" style="width: 92%;"></div></div>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric-header">
+          <span>色彩丰富与和谐度</span>
+          <strong id="valColor">85.0</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="barColor" style="width: 85%;"></div></div>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric-header">
+          <span>构图与水平线</span>
+          <strong id="valComp">90.0</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="barComp" style="width: 90%;"></div></div>
+      </div>
+
+      <div class="panel-title" style="margin-top: 10px;">技术诊断信息</div>
+      <div style="font-size: 12px; color: var(--text-muted); line-height: 1.6;" id="techDetails">
+        <!-- 动态填充 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 进度加载全屏遮罩 -->
+  <div class="progress-overlay hidden" id="loadingOverlay">
+    <div class="spinner"></div>
+    <div style="font-size: 15px; font-weight: 600;" id="loadingText">正在使用 Apple M4 GPU (MPS) 评估分析...</div>
+    <div style="font-size: 12px; color: var(--text-muted);" id="loadingSub">利用统一内存进行零拷贝高速张量运算</div>
+  </div>
+
+  <script>
+    let photoData = [];
+    let currentFilter = 'ALL';
+    let selectedPhoto = null;
+
+    // DOM 引用
+    const dropArea = document.getElementById('dropArea');
+    const fileInput = document.getElementById('fileInput');
+    const photoGrid = document.getElementById('photoGrid');
+    const detailDrawer = document.getElementById('detailDrawer');
+    const closeDrawer = document.getElementById('closeDrawer');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const loadingText = document.getElementById('loadingText');
+
+    // 拖拽监听
+    dropArea.addEventListener('click', () => fileInput.click());
+    dropArea.addEventListener('dragover', (e) => { e.preventDefault(); dropArea.classList.add('dragover'); });
+    dropArea.addEventListener('dragleave', () => dropArea.classList.remove('dragover'));
+    dropArea.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropArea.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        handleFiles(e.dataTransfer.files);
+      }
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length > 0) {
+        handleFiles(fileInput.files);
+      }
+    });
+
+    closeDrawer.addEventListener('click', () => {
+      detailDrawer.classList.add('hidden');
+      if (selectedPhoto) {
+        document.querySelector(`.photo-card[data-id="${selectedPhoto.id}"]`)?.classList.remove('selected');
+        selectedPhoto = null;
+      }
+    });
+
+    // 筛选标签切换
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentFilter = tab.getAttribute('data-filter');
+        renderGrid();
+      });
+    });
+
+    // 处理文件导入并调用后端评估 API
+    async function handleFiles(files) {
+      loadingOverlay.classList.remove('hidden');
+      loadingText.textContent = `正在使用 Apple M4 GPU 评估 ${files.length} 张照片...`;
+
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+      }
+      formData.append('preset', document.getElementById('presetSelect').value);
+
+      try {
+        const res = await fetch('/api/evaluate', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (data.results) {
+          photoData = data.results.map((item, index) => ({
+            ...item,
+            id: index,
+            thumbUrl: `/api/thumbnail?id=${index}`
+          }));
+          updateStats();
+          renderGrid();
+        }
+      } catch (err) {
+        alert('评估出错: ' + err.message);
+      } finally {
+        loadingOverlay.classList.add('hidden');
+      }
+    }
+
+    function updateStats() {
+      const counts = { S: 0, A: 0, B: 0, C: 0 };
+      photoData.forEach(p => counts[p.tier] = (counts[p.tier] || 0) + 1);
+
+      document.getElementById('countS').textContent = counts.S || 0;
+      document.getElementById('countA').textContent = counts.A || 0;
+      document.getElementById('countB').textContent = counts.B || 0;
+      document.getElementById('countC').textContent = counts.C || 0;
+      document.getElementById('countAll').textContent = photoData.length;
+
+      document.getElementById('currentStatsSummary').textContent = 
+        `共 ${photoData.length} 张 | S级: ${counts.S || 0} | A级: ${counts.A || 0} | B级: ${counts.B || 0} | C级: ${counts.C || 0}`;
+    }
+
+    function renderGrid() {
+      const filtered = photoData.filter(p => currentFilter === 'ALL' || p.tier === currentFilter);
+      if (filtered.length === 0) {
+        photoGrid.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">🔍</div>
+            <div style="font-size: 15px; font-weight: 600;">暂无匹配的照片</div>
+            <div style="font-size: 13px;">请选择其他筛选级别或导入更多照片</div>
+          </div>
+        `;
+        return;
+      }
+
+      photoGrid.innerHTML = filtered.map(p => `
+        <div class="photo-card ${selectedPhoto?.id === p.id ? 'selected' : ''}" data-id="${p.id}" onclick="selectCard(${p.id})">
+          <div class="thumb-wrap">
+            <img src="${p.thumbUrl}" loading="lazy" alt="${p.filename}">
+            <span class="card-tier-badge badge-${p.tier.toLowerCase()}">${p.tier} 级</span>
+            <span class="card-score">${p.overall_score} 分</span>
+          </div>
+          <div class="card-info">
+            <div class="card-filename" title="${p.filename}">${p.filename}</div>
+            <div class="mini-metrics">
+              <div class="metric-pill"><span>锐度</span><span>${p.sharpness}</span></div>
+              <div class="metric-pill"><span>宽容度</span><span>${p.dynamic_range}</span></div>
+              <div class="metric-pill"><span>噪点</span><span>${p.noise_control}</span></div>
+              <div class="metric-pill"><span>色彩</span><span>${p.color_harmony}</span></div>
+            </div>
+            ${p.flags && p.flags.length ? `
+              <div class="flags-tag-list">
+                ${p.flags.map(f => `<span class="flag-tag">${translateFlag(f)}</span>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function translateFlag(flag) {
+      const map = {
+        'blurry': '失焦微晃',
+        'clipped_highlights': '高光死白',
+        'crushed_shadows': '暗部死黑',
+        'underexposed': '欠曝严重',
+        'overexposed': '过曝严重',
+        'tilted_horizon': '地平线倾斜'
+      };
+      return map[flag] || flag;
+    }
+
+    window.selectCard = function(id) {
+      selectedPhoto = photoData.find(p => p.id === id);
+      if (!selectedPhoto) return;
+
+      document.querySelectorAll('.photo-card').forEach(c => c.classList.remove('selected'));
+      document.querySelector(`.photo-card[data-id="${id}"]`)?.classList.add('selected');
+
+      // 展开右侧抽屉
+      detailDrawer.classList.remove('hidden');
+      document.getElementById('drawerFilename').textContent = selectedPhoto.filename;
+      document.getElementById('drawerThumb').src = selectedPhoto.thumbUrl;
+      document.getElementById('drawerScore').innerHTML = `${selectedPhoto.overall_score} <span style="font-size:12px;color:var(--text-muted);font-weight:normal;">分</span>`;
+      
+      const badge = document.getElementById('drawerTierBadge');
+      badge.className = `badge badge-${selectedPhoto.tier.toLowerCase()}`;
+      badge.textContent = `${selectedPhoto.tier} 级`;
+
+      // 旗标
+      const flagsBox = document.getElementById('drawerFlags');
+      flagsBox.innerHTML = (selectedPhoto.flags || []).map(f => `<span class="flag-tag">${translateFlag(f)}</span>`).join('');
+
+      // 进度条
+      setMetric('valSharp', 'barSharp', selectedPhoto.sharpness);
+      setMetric('valDR', 'barDR', selectedPhoto.dynamic_range);
+      setMetric('valNoise', 'barNoise', selectedPhoto.noise_control);
+      setMetric('valColor', 'barColor', selectedPhoto.color_harmony);
+      setMetric('valComp', 'barComp', selectedPhoto.composition);
+
+      // 技术诊断
+      const det = selectedPhoto.details || {};
+      document.getElementById('techDetails').innerHTML = `
+        <div>• 算力加速设备: <b style="color:#10b981;">${det.compute_device || 'Apple Silicon M4'}</b></div>
+        <div>• 高光溢出比例: ${det.clipped_highlights_pct || 0}%</div>
+        <div>• 阴影死黑比例: ${det.clipped_shadows_pct || 0}%</div>
+        <div>• 直方图熵值: ${det.entropy || 'N/A'} (色彩信息量)</div>
+        <div>• 水平线倾角: ${det.tilt_angle_deg || 0}°</div>
+      `;
+    };
+
+    function setMetric(valId, barId, score) {
+      document.getElementById(valId).textContent = score;
+      document.getElementById(barId).style.width = `${Math.min(100, Math.max(0, score))}%`;
+    }
+
+    // 一键调色与导出流水线
+    document.getElementById('btnRunPipeline').addEventListener('click', async () => {
+      if (photoData.length === 0) {
+        alert('请先导入照片！');
+        return;
+      }
+      const sAndACount = photoData.filter(p => p.tier === 'S' || p.tier === 'A').length;
+      if (sAndACount === 0) {
+        alert('当前没有评估为 S 或 A 级的照片！');
+        return;
+      }
+      if (!confirm(`将对 ${sAndACount} 张 S/A 级精选照片进行摄影师自动调色与裁切，是否继续？`)) return;
+
+      loadingOverlay.classList.remove('hidden');
+      loadingText.textContent = `正在使用 M4 加速调色与水平校正 ${sAndACount} 张精选照片...`;
+
+      try {
+        const res = await fetch('/api/pipeline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tiers: 'S,A', look: 'natural' })
+        });
+        const result = await res.json();
+        alert(`调色完成！已成功导出 ${result.total_developed} 张照片到 ~/Pictures/PhotoGrade_Export 目录。`);
+      } catch (err) {
+        alert('执行调色失败: ' + err.message);
+      } finally {
+        loadingOverlay.classList.add('hidden');
+      }
+    });
+
+    // 归档导出
+    document.getElementById('btnExportKeepers').addEventListener('click', async () => {
+      if (photoData.length === 0) return alert('请先导入照片');
+      const res = await fetch('/api/organize', { method: 'POST' });
+      const data = await res.json();
+      alert(`已成功自动分类整理到目录: ${data.path}`);
+    });
+
+    // 初始化硬件状态获取
+    fetch('/api/system_info').then(r => r.json()).then(data => {
+      document.getElementById('deviceText').textContent = data.device_name || 'Apple M4 MPS (Metal) Ready';
+    }).catch(() => {});
+  </script>
+</body>
+</html>
