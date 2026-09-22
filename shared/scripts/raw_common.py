@@ -8,9 +8,21 @@ about a specific camera family.
 
 from __future__ import annotations
 
+import glob
 import json
 import sys
 from pathlib import Path
+
+# Auto-detect local virtualenv site-packages so it works out of the box with system/homebrew python
+_THIS_FILE = Path(__file__).resolve()
+for _cand in [
+    _THIS_FILE.parent.parent.parent / ".venv",
+    Path.cwd() / ".venv",
+    Path.home() / ".venv",
+]:
+    for _site in glob.glob(str(_cand / "lib" / "python*" / "site-packages")):
+        if _site not in sys.path:
+            sys.path.insert(0, _site)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 

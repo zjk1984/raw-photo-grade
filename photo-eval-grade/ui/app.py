@@ -9,7 +9,9 @@ Leverages Apple Silicon M4 MPS acceleration for instant local culling & grading.
 from __future__ import annotations
 
 import argparse
-import cgi
+from email.parser import BytesParser
+from email.policy import default
+import glob
 import io
 import json
 import os
@@ -22,9 +24,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+# Auto-detect local virtualenv site-packages so it works out of the box with system/homebrew python
+_CURRENT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _CURRENT_DIR.parent.parent
+for _cand in [
+    _REPO_ROOT / ".venv",
+    Path.cwd() / ".venv",
+    Path.home() / ".venv",
+]:
+    for _site in glob.glob(str(_cand / "lib" / "python*" / "site-packages")):
+        if _site not in sys.path:
+            sys.path.insert(0, _site)
+
 from PIL import Image
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "shared" / "scripts"))
 sys.path.insert(0, str(_REPO_ROOT / "photo-eval-grade" / "scripts"))
 
@@ -117,16 +130,26 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 return
 
             # Parse multipart form data
-            form = cgi.FieldStorage(
-                fp=self.rfile,
-                headers=self.headers,
-                environ={
-                    "REQUEST_METHOD": "POST",
-                    "CONTENT_TYPE": ctype,
-                },
-            )
+            length = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(length)
+            msg_bytes = f"Content-Type: {ctype}\r\n\r\n".encode("utf-8") + raw_body
+            msg = BytesParser(policy=default).parsebytes(msg_bytes)
 
-            preset = form.getvalue("preset", "general")
+            preset = "general"
+            uploaded_files = []
+
+            for part in msg.iter_parts():
+                pname = part.get_param("name", header="content-disposition")
+                pfilename = part.get_filename()
+                if pname == "preset":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        preset = payload.decode("utf-8", errors="ignore").strip()
+                elif pfilename:
+                    raw_bytes = part.get_payload(decode=True)
+                    if raw_bytes:
+                        uploaded_files.append((pfilename, raw_bytes))
+
             SESSION_DATA["current_preset"] = preset
             evaluator = PhotoEvaluator(
                 device_name="auto",
@@ -134,21 +157,13 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
             )
             SESSION_DATA["evaluator"] = evaluator
 
-            file_items = form["files"] if "files" in form else []
-            if not isinstance(file_items, list):
-                file_items = [file_items]
-
             temp_dir = Path(tempfile.gettempdir()) / "photograde_m4_session"
             temp_dir.mkdir(parents=True, exist_ok=True)
 
             results = []
             SESSION_DATA["temp_files"].clear()
 
-            for idx, item in enumerate(file_items):
-                if not getattr(item, "filename", None):
-                    continue
-                filename = item.filename
-                raw_bytes = item.file.read()
+            for idx, (filename, raw_bytes) in enumerate(uploaded_files):
                 temp_file = temp_dir / filename
                 temp_file.write_bytes(raw_bytes)
 

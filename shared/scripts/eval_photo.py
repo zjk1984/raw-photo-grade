@@ -15,6 +15,7 @@ Designed for Apple Silicon (M4 / M3 / M2 / M1) Unified Memory architecture via P
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import math
 import shutil
@@ -22,6 +23,17 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+# Auto-detect local virtualenv site-packages so it works out of the box with system/homebrew python
+_THIS_FILE = Path(__file__).resolve()
+for _cand in [
+    _THIS_FILE.parent.parent.parent / ".venv",
+    Path.cwd() / ".venv",
+    Path.home() / ".venv",
+]:
+    for _site in glob.glob(str(_cand / "lib" / "python*" / "site-packages")):
+        if _site not in sys.path:
+            sys.path.insert(0, _site)
 
 import numpy as np
 from PIL import Image
