@@ -95,26 +95,31 @@ if [ ! -f "$FINAL_DMG" ]; then
     TEMP_DMG="$DMG_OUTPUT_DIR/temp_${DMG_NAME}"
     rm -f "$TEMP_DMG"
 
-    # 生成读写过渡 DMG
-    hdiutil create -srcfolder "$DMG_STAGING_DIR" \
+    # 生成读写过渡 DMG 并转换为高压缩 UDZO
+    if hdiutil create -srcfolder "$DMG_STAGING_DIR" \
                    -volname "${APP_NAME}" \
-                   -fs HFS+ \
-                   -fsargs "-c c=64,a=16,e=16" \
                    -format UDRW \
-                   "$TEMP_DMG"
+                   "$TEMP_DMG"; then
+        # 启用卷标图标展示
+        if [ -f "$ICON_PATH" ] && command -v SetFile &>/dev/null; then
+            MOUNT_DIR="$(mktemp -d -t photograde_mount_XXXXXX)"
+            hdiutil attach "$TEMP_DMG" -mountpoint "$MOUNT_DIR" -nobrowse -quiet || true
+            SetFile -a C "$MOUNT_DIR" 2>/dev/null || true
+            hdiutil detach "$MOUNT_DIR" -quiet || true
+            rm -rf "$MOUNT_DIR"
+        fi
 
-    # 启用卷标图标展示
-    if [ -f "$ICON_PATH" ] && command -v SetFile &>/dev/null; then
-        MOUNT_DIR="$(mktemp -d -t photograde_mount_XXXXXX)"
-        hdiutil attach "$TEMP_DMG" -mountpoint "$MOUNT_DIR" -nobrowse -quiet || true
-        SetFile -a C "$MOUNT_DIR" 2>/dev/null || true
-        hdiutil detach "$MOUNT_DIR" -quiet || true
-        rm -rf "$MOUNT_DIR"
+        # 转换为只读并应用 UDZO 高压缩
+        hdiutil convert "$TEMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$FINAL_DMG"
+        rm -f "$TEMP_DMG"
+    else
+        echo -e "${YELLOW}hdiutil UDRW/convert 模式失败，回退到直接 UDZO 构建...${NC}"
+        hdiutil create -srcfolder "$DMG_STAGING_DIR" \
+                       -volname "${APP_NAME}" \
+                       -format UDZO \
+                       -ov \
+                       "$FINAL_DMG"
     fi
-
-    # 转换为只读并应用 UDZO 高压缩
-    hdiutil convert "$TEMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$FINAL_DMG"
-    rm -f "$TEMP_DMG"
 fi
 
 # 清理临时工作目录

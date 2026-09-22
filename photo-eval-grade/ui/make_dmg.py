@@ -58,8 +58,21 @@ def create_app_bundle():
     launcher_script = """#!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
 RESOURCES="$DIR/../Resources"
+APP_ROOT="$(cd "$DIR/../../.." && pwd)"
+
+# Prioritize virtual environments in project or system
+if [ -f "$APP_ROOT/.venv/bin/python3" ]; then
+    PY="$APP_ROOT/.venv/bin/python3"
+elif [ -f "$HOME/.venv/bin/python3" ]; then
+    PY="$HOME/.venv/bin/python3"
+elif command -v python3 &>/dev/null; then
+    PY="$(command -v python3)"
+else
+    PY="/usr/bin/python3"
+fi
+
 export PYTHONPATH="$RESOURCES:$RESOURCES/shared/scripts:$RESOURCES/photo-eval-grade/scripts:$PYTHONPATH"
-exec "${PYTHON_BIN:-python3}" "$RESOURCES/photo-eval-grade/ui/app.py" "$@"
+exec "$PY" "$RESOURCES/photo-eval-grade/ui/app.py" "$@"
 """
     bin_file = macos / "PhotoGradeM4"
     bin_file.write_text(launcher_script, encoding="utf-8")
@@ -99,21 +112,31 @@ def create_dmg():
         print("✓ 使用 macOS 原生 hdiutil 制作高压缩 DMG...")
         temp_dmg = DIST_DIR / "temp.dmg"
         temp_dmg.unlink(missing_ok=True)
-        subprocess.run([
-            "hdiutil", "create",
-            "-srcfolder", str(staging_dir),
-            "-volname", "PhotoGrade M4",
-            "-fs", "HFS+",
-            "-format", "UDRW",
-            str(temp_dmg)
-        ], check=True)
-        subprocess.run([
-            "hdiutil", "convert", str(temp_dmg),
-            "-format", "UDZO",
-            "-imagekey", "zlib-level=9",
-            "-o", str(FINAL_DMG)
-        ], check=True)
-        temp_dmg.unlink(missing_ok=True)
+        try:
+            subprocess.run([
+                "hdiutil", "create",
+                "-srcfolder", str(staging_dir),
+                "-volname", "PhotoGrade M4",
+                "-format", "UDRW",
+                str(temp_dmg)
+            ], check=True)
+            subprocess.run([
+                "hdiutil", "convert", str(temp_dmg),
+                "-format", "UDZO",
+                "-imagekey", "zlib-level=9",
+                "-o", str(FINAL_DMG)
+            ], check=True)
+            temp_dmg.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"hdiutil UDRW/UDZO failed: {e}, falling back to direct create...")
+            subprocess.run([
+                "hdiutil", "create",
+                "-srcfolder", str(staging_dir),
+                "-volname", "PhotoGrade M4",
+                "-format", "UDZO",
+                "-ov",
+                str(FINAL_DMG)
+            ], check=True)
     elif shutil.which("genisoimage") or shutil.which("mkisofs"):
         tool = shutil.which("genisoimage") or shutil.which("mkisofs")
         print(f"✓ 使用 {tool} (Apple HFS/ISO 格式) 制作标准兼容 DMG...")
