@@ -57,6 +57,9 @@ python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look n
 # 5. Launch the Visual Mac Desktop Application (GUI):
 python3 photo-eval-grade/ui/app.py
 # or: ./photo-eval-grade/ui/launch_app.sh
+
+# 6. Build Standalone macOS App Bundle (PhotoGrade M4.app):
+./photo-eval-grade/ui/build_mac_app.sh
 ```
 
 See each skill's `SKILL.md` for the full workflow.

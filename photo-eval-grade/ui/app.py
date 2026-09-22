@@ -58,7 +58,13 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/" or path == "/index.html":
+            # Support both development and PyInstaller bundled locations
             html_file = Path(__file__).parent / "index.html"
+            if not html_file.exists():
+                # In PyInstaller, resource may be at sys._MEIPASS
+                meipass = getattr(sys, "_MEIPASS", None)
+                if meipass:
+                    html_file = Path(meipass) / "index.html"
             if not html_file.exists():
                 self.send_error(404, "index.html not found")
                 return

@@ -86,6 +86,9 @@ Launch the native macOS-styled interactive desktop interface to drag-and-drop ph
 python3 "$SKILL_DIR/ui/app.py"
 # Or run launcher script
 "$SKILL_DIR/ui/launch_app.sh"
+
+# Build standalone macOS app bundle (PhotoGrade M4.app)
+"$SKILL_DIR/ui/build_mac_app.sh"
 ```
 
 ### 4. Direct Pipeline to Develop & Crop

@@ -14,10 +14,12 @@ SPEC_ROOT = Path(SPECPATH).resolve()
 REPO_ROOT = SPEC_ROOT.parent.parent
 
 added_files = [
-    (str(SPEC_ROOT / "index.html"), "ui"),
+    (str(SPEC_ROOT / "index.html"), "."),
     (str(REPO_ROOT / "photo-eval-grade" / "references"), "photo-eval-grade/references"),
     (str(REPO_ROOT / "shared" / "scripts"), "shared/scripts"),
 ]
+
+icon_path = str(SPEC_ROOT / "AppIcon.icns") if (SPEC_ROOT / "AppIcon.icns").exists() else None
 
 a = Analysis(
     ['app.py'],
@@ -73,7 +75,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='PhotoGrade M4.app',
-    icon=None,
+    icon=icon_path,
     bundle_identifier='com.photograde.m4',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
