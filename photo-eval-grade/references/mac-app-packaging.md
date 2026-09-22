@@ -26,19 +26,24 @@ brew install libraw exiftool
 pip3 install torch torchvision rawpy Pillow numpy pyinstaller pywebview
 ```
 
-### 步骤 2：运行自动化打包脚本
+### 步骤 2：运行自动化打包与 DMG 制作脚本
 
-我们在 `photo-eval-grade/ui/` 中提供了全自动打包脚本：
+我们在 `photo-eval-grade/ui/` 中提供了全自动打包与 DMG 制作脚本：
 
 ```bash
+# 一键编译 .app 并自动生成 .dmg 安装镜像：
 ./photo-eval-grade/ui/build_mac_app.sh
+
+# 或者仅对已编译好的 .app 单独打包生成 DMG：
+./photo-eval-grade/ui/build_dmg.sh
 ```
 
 脚本将自动执行：
 - 检查系统环境与 Python 版本；
 - 抓取依赖与前端界面模板 `index.html`；
 - 调用 PyInstaller 按照 `photo-eval-grade/ui/PhotoGradeM4.spec` 规范完成编译；
-- 生成独立的 macOS Bundle：`dist/PhotoGrade M4.app`。
+- 生成独立的 macOS Bundle：`dist/PhotoGrade M4.app`；
+- 通过 macOS 原生 `hdiutil`（或 `create-dmg`）生成带 Applications 拖拽安装软链接、UDZO 高压缩的 DMG 安装镜像：`dist/PhotoGrade-M4-Installer.dmg`。
 
 ---
 
@@ -48,11 +53,17 @@ pip3 install torch torchvision rawpy Pillow numpy pyinstaller pywebview
 
 ```
 dist/
-└── PhotoGrade M4.app
+├── PhotoGrade M4.app
+└── PhotoGrade-M4-Installer.dmg
 ```
 
+### DMG 安装体验：
+1. 双击 **`PhotoGrade-M4-Installer.dmg`**；
+2. 系统将挂载虚拟磁盘，并弹出一个标准的 Mac 安装窗口；
+3. 将 **`PhotoGrade M4.app`** 图标拖拽到旁边的 **`Applications`（应用程序）** 替身图标上，即可完成标准安装；
+4. 随后推出该 DMG 磁盘即可。
+
 ### 日常运行：
-- **安装到系统**：直接将 `PhotoGrade M4.app` 拖入 Finder 左侧的 **“应用程序”（/Applications）** 目录；
 - **启动使用**：在 Launchpad（启动台）或 Spotlight（聚焦搜索）中输入 `PhotoGrade M4`，回车即可像原生 Mac 软件一样秒开；
 - **拖拽体验**：将 SD 卡、相机文件夹或单张 RAW 照片直接拖入窗口中间，M4 GPU 即可开始并发打分并呈现 S/A/B/C 分级卡片。
 

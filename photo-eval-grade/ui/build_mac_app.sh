@@ -85,10 +85,15 @@ APP_DIST="$REPO_ROOT/dist/PhotoGrade M4.app"
 
 if [ -d "$APP_DIST" ]; then
     echo -e "${GREEN}======================================================${NC}"
-    echo -e "${GREEN}✓ 打包成功！${NC}"
+    echo -e "${GREEN}✓ .app 打包成功！${NC}"
     echo -e "${GREEN}应用路径: $APP_DIST${NC}"
-    echo -e "${GREEN}你可以直接双击运行，或将其拖入 /Applications 文件夹使用。${NC}"
     echo -e "${GREEN}======================================================${NC}"
+
+    # 如果没有指定 --no-dmg 且运行在 macOS 上，自动调用生成 DMG 安装包
+    if [ "$1" != "--no-dmg" ] && [ "$OS" = "Darwin" ]; then
+        echo -e "${BLUE}==> 开始生成 .dmg 安装镜像...${NC}"
+        "$SCRIPT_DIR/build_dmg.sh"
+    fi
 else
     echo -e "${RED}打包遇到问题，请检查上方日志。${NC}"
 fi

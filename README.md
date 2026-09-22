@@ -58,8 +58,9 @@ python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look n
 python3 photo-eval-grade/ui/app.py
 # or: ./photo-eval-grade/ui/launch_app.sh
 
-# 6. Build Standalone macOS App Bundle (PhotoGrade M4.app):
-./photo-eval-grade/ui/build_mac_app.sh
+# 6. Build Standalone macOS App Bundle & DMG Installer:
+./photo-eval-grade/ui/build_mac_app.sh    # Builds .app and creates .dmg installer
+./photo-eval-grade/ui/build_dmg.sh        # Generates PhotoGrade-M4-Installer.dmg
 ```
 
 See each skill's `SKILL.md` for the full workflow.
