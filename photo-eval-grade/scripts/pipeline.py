@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""End-to-End Automated Pipeline: Evaluate on M4 GPU -> Filter S/A Keepers -> Develop & Crop.
+"""End-to-End Automated Pipeline: Evaluate -> Filter S/A Keepers -> Develop & Crop.
 
-Ties photo evaluation together with camera-raw-grade / phone-dng-grade develop engines.
-Supports classic looks, Sony Creative Look inspired presets, and --look auto scene selection.
+Auto look selection uses ordered scene pools + secondary cues (skill-aligned),
+optional sticky lock (one shoot, one grade), and --look-compare contact sheets.
 """
 
 from __future__ import annotations
@@ -19,11 +19,30 @@ if not (_SHARED / "eval_photo.py").exists() or not (_SHARED / "raw_develop.py").
 sys.path.insert(0, str(_SHARED))
 from crop import inscribe_rect, tilt_angle_deg  # noqa: E402
 from eval_photo import PhotoEvaluator, format_table  # noqa: E402
-from look_select import suggest_look  # noqa: E402
+from look_select import build_look_compare_sheet, suggest_look_detail  # noqa: E402
 from looks import ALL_LOOKS, get_look, look_choices, load_prefs  # noqa: E402
 from raw_develop import apply_grade, apply_orientation, decode_raw, resize_long_edge, save_image  # noqa: E402
 from PIL import Image
 import numpy as np
+
+
+def _load_rgb(src: Path) -> np.ndarray:
+    if src.suffix.lower() in {".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}:
+        rgb = decode_raw(src, bright=1.0, no_auto_bright=False)
+        return apply_orientation(rgb, "auto", src)
+    with Image.open(src) as im:
+        return np.asarray(im.convert("RGB"), dtype=np.float32) / 255.0
+
+
+def _maybe_straighten(graded: np.ndarray) -> np.ndarray:
+    im_graded = Image.fromarray((np.clip(graded, 0, 1) * 255.0 + 0.5).astype(np.uint8))
+    angle = tilt_angle_deg(np.asarray(im_graded))
+    if abs(angle) < 0.15:
+        return graded
+    im_graded = im_graded.rotate(angle, resample=Image.BICUBIC, expand=False, fillcolor=(0, 0, 0))
+    x0, y0, x1, y1 = inscribe_rect(im_graded.width, im_graded.height, angle)
+    im_graded = im_graded.crop((x0, y0, x1, y1))
+    return np.asarray(im_graded, dtype=np.float32) / 255.0
 
 
 def main() -> int:
@@ -39,13 +58,23 @@ def main() -> int:
         "--look",
         default="auto",
         choices=look_opts,
-        help="Grade look, or 'auto' to pick brand look from scene heuristics",
+        help="Grade look, or 'auto' for pool + secondary cue pick",
     )
     parser.add_argument(
         "--brand",
         default=None,
         choices=["sony", "fuji", "nikon"],
-        help="When --look auto: prefer Sony / Fuji / Nikon master looks (default: prefs)",
+        help="When --look auto: brand look pools (default: prefs)",
+    )
+    parser.add_argument(
+        "--look-compare",
+        action="store_true",
+        help="Also export top pool alternates + contact sheet (skill: preview before final)",
+    )
+    parser.add_argument(
+        "--no-sticky",
+        action="store_true",
+        help="Disable one-shoot sticky look lock (default: sticky on for auto)",
     )
     parser.add_argument("--out-dir", required=True, help="Directory to save final developed photos")
     parser.add_argument("--straighten", action="store_true", help="Auto-level horizon")
@@ -56,6 +85,21 @@ def main() -> int:
     out_path = Path(args.out_dir).expanduser()
     out_path.mkdir(parents=True, exist_ok=True)
     prefs = load_prefs()
+    sticky = (not args.no_sticky) and bool(prefs.get("sticky_look", True))
+
+    # Resume sticky lock from prior run in same out-dir (one shoot, one grade)
+    locked_look: str | None = None
+    manifest_path = out_path / "pipeline_manifest.json"
+    if sticky and args.look == "auto" and manifest_path.exists():
+        try:
+            prev = json.loads(manifest_path.read_text(encoding="utf-8"))
+            locked_look = prev.get("locked_look") or None
+            if locked_look and locked_look not in ALL_LOOKS:
+                locked_look = None
+            if locked_look:
+                print(f"==> Sticky lock from prior manifest: {locked_look}", file=sys.stderr)
+        except Exception:
+            locked_look = None
 
     print(f"==> Step 1: Evaluating photos using M4/Metal GPU (device: {args.device})...", file=sys.stderr)
     evaluator = PhotoEvaluator(device_name=args.device)
@@ -109,9 +153,13 @@ def main() -> int:
         print("No photos matched the selected tiers.", file=sys.stderr)
         return 0
 
-    print(f"==> Step 3: Developing (look={args.look})...", file=sys.stderr)
+    print(
+        f"==> Step 3: Developing (look={args.look}, sticky={sticky}, compare={args.look_compare})...",
+        file=sys.stderr,
+    )
 
     developed_records = []
+    compare_dir = out_path / "look_compare"
     for ev in keepers:
         src = Path(ev.path)
         dest_name = f"{src.stem}_graded.jpg"
@@ -119,55 +167,81 @@ def main() -> int:
 
         print(f"Developing {src.name} [{ev.tier} | {ev.overall_score:.1f}pts] -> {dest_name}", file=sys.stderr)
 
-        if src.suffix.lower() in {".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}:
-            rgb = decode_raw(src, bright=1.0, no_auto_bright=False)
-            rgb = apply_orientation(rgb, "auto", src)
-        else:
-            with Image.open(src) as im:
-                im = im.convert("RGB")
-                rgb = np.asarray(im, dtype=np.float32) / 255.0
-
-        if args.preview:
+        rgb = _load_rgb(src)
+        if args.preview or args.look_compare:
             rgb = resize_long_edge(rgb, 1600)
 
-        look_name, scene_tag = suggest_look(
+        suggestion = suggest_look_detail(
             rgb,
             ev.details,
             forced=None if args.look == "auto" else args.look,
             auto=(args.look == "auto"),
             brand=args.brand,
+            locked_look=locked_look if args.look == "auto" else None,
+            sticky=sticky if args.look == "auto" else False,
         )
+        look_name = suggestion.look
         if look_name not in ALL_LOOKS:
             look_name = prefs.get("default_look", "sony-st")
+            suggestion.look = look_name
+
+        # Establish sticky lock on first auto pick of this run
+        if sticky and args.look == "auto" and locked_look is None:
+            locked_look = look_name
+            print(f"  sticky lock set -> {locked_look}", file=sys.stderr)
+
         params = get_look(look_name)
-
         graded = apply_grade(rgb, params)
-
         if args.straighten:
-            im_graded = Image.fromarray((np.clip(graded, 0, 1) * 255.0 + 0.5).astype(np.uint8))
-            angle = tilt_angle_deg(np.asarray(im_graded))
-            if abs(angle) >= 0.15:
-                im_graded = im_graded.rotate(angle, resample=Image.BICUBIC, expand=False, fillcolor=(0, 0, 0))
-                x0, y0, x1, y1 = inscribe_rect(im_graded.width, im_graded.height, angle)
-                im_graded = im_graded.crop((x0, y0, x1, y1))
-                graded = np.asarray(im_graded, dtype=np.float32) / 255.0
-
+            graded = _maybe_straighten(graded)
         save_image(graded, dest_file, quality=args.quality, tiff=False)
+
+        compare_outputs: list[str] = []
+        sheet_path = None
+        if args.look_compare and suggestion.candidates:
+            compare_dir.mkdir(parents=True, exist_ok=True)
+            panels: list[tuple[str, np.ndarray]] = []
+            for cand in suggestion.candidates[:3]:
+                if cand not in ALL_LOOKS:
+                    continue
+                alt = apply_grade(rgb, get_look(cand))
+                tag = "PRIMARY" if cand == look_name else "ALT"
+                label = f"{tag}: {cand}"
+                alt_path = compare_dir / f"{src.stem}__{cand}.jpg"
+                save_image(alt, alt_path, quality=88, tiff=False)
+                compare_outputs.append(str(alt_path))
+                panels.append((label, alt))
+            if panels:
+                sheet_path = compare_dir / f"{src.stem}__compare.jpg"
+                build_look_compare_sheet(panels, sheet_path)
+                print(f"  compare sheet -> {sheet_path.name}", file=sys.stderr)
+
         developed_records.append({
             "source": str(src),
             "tier": ev.tier,
             "overall_score": ev.overall_score,
             "output": str(dest_file),
             "look": look_name,
-            "scene_tag": scene_tag,
+            "scene_tag": suggestion.scene_tag,
+            "candidates": suggestion.candidates,
+            "reason": suggestion.reason,
+            "sticky": suggestion.sticky or (sticky and locked_look == look_name and args.look == "auto"),
+            "compare_outputs": compare_outputs,
+            "compare_sheet": str(sheet_path) if sheet_path else None,
         })
-        print(f"  look={look_name} scene={scene_tag}", file=sys.stderr)
+        print(
+            f"  look={look_name} scene={suggestion.scene_tag} reason={suggestion.reason} "
+            f"candidates={suggestion.candidates}",
+            file=sys.stderr,
+        )
 
-    manifest_path = out_path / "pipeline_manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump({
             "look_mode": args.look,
             "brand": args.brand or prefs.get("brand"),
+            "sticky_look": sticky,
+            "locked_look": locked_look if args.look == "auto" else None,
+            "look_compare": args.look_compare,
             "target_tiers": list(target_tiers),
             "total_evaluated": len(evals),
             "total_developed": len(developed_records),

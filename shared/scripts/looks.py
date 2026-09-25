@@ -669,47 +669,53 @@ ALL_LOOKS: dict[str, dict[str, Any]] = {
     **NIKON_LOOKS,
 }
 
-# Scene tag → preferred look (overridable via prefs).
-DEFAULT_SCENE_MAP: dict[str, str] = {
-    "portrait": "sony-pt",
-    "landscape": "sony-fl",
-    "vivid": "sony-vv2",
-    "matte": "sony-in",
-    "highkey": "sony-sh",
-    "night": "night",
-    "neutral_grade": "sony-nt",
-    "general": "sony-st",
-}
-
-BRAND_SCENE_MAPS: dict[str, dict[str, str]] = {
-    "sony": DEFAULT_SCENE_MAP,
-    "fuji": {
-        "portrait": "fuji-astia",
-        "landscape": "fuji-velvia",
-        "vivid": "fuji-velvia",
-        "matte": "fuji-classic-chrome",
-        "highkey": "fuji-astia",
-        "night": "fuji-eterna",
-        "neutral_grade": "fuji-provia",
-        "general": "fuji-provia",
-    },
-    "nikon": {
-        "portrait": "nikon-portrait",
-        "landscape": "nikon-landscape",
-        "vivid": "nikon-vivid",
-        "matte": "nikon-flat",
-        "highkey": "nikon-rich-tone-portrait",
-        "night": "night",
-        "neutral_grade": "nikon-neutral",
-        "general": "nikon-standard",
-    },
-}
-
 BRAND_DEFAULT_LOOK: dict[str, str] = {
     "sony": "sony-st",
     "fuji": "fuji-provia",
     "nikon": "nikon-standard",
 }
+
+# Ordered candidate pools per brand/scene (first = safe default).
+# Secondary heuristics pick within the pool; sticky lock keeps one look per shoot.
+BRAND_SCENE_POOLS: dict[str, dict[str, list[str]]] = {
+    "sony": {
+        "portrait": ["sony-pt", "sony-st", "sony-sh"],
+        "landscape": ["sony-fl", "sony-vv2", "sony-st"],
+        "vivid": ["sony-vv2", "sony-vv", "sony-fl"],
+        "matte": ["sony-in", "sony-fl2", "sony-nt"],
+        "highkey": ["sony-sh", "sony-pt", "sony-st"],
+        "night": ["night", "sony-fl", "sony-nt"],
+        "neutral_grade": ["sony-nt", "sony-st", "editorial-flat"],
+        "general": ["sony-st", "sony-fl", "natural"],
+    },
+    "fuji": {
+        "portrait": ["fuji-astia", "fuji-provia", "fuji-nostalgic-neg"],
+        "landscape": ["fuji-velvia", "fuji-classic-chrome", "fuji-provia"],
+        "vivid": ["fuji-velvia", "fuji-classic-neg", "fuji-provia"],
+        "matte": ["fuji-classic-chrome", "fuji-eterna", "fuji-classic-neg"],
+        "highkey": ["fuji-astia", "fuji-provia", "fuji-nostalgic-neg"],
+        "night": ["fuji-eterna", "fuji-classic-chrome", "night"],
+        "neutral_grade": ["fuji-provia", "fuji-eterna", "fuji-astia"],
+        "general": ["fuji-provia", "fuji-classic-chrome", "fuji-astia"],
+    },
+    "nikon": {
+        "portrait": ["nikon-portrait", "nikon-rich-tone-portrait", "nikon-standard"],
+        "landscape": ["nikon-landscape", "nikon-vivid", "nikon-standard"],
+        "vivid": ["nikon-vivid", "nikon-landscape", "nikon-standard"],
+        "matte": ["nikon-flat", "nikon-neutral", "editorial-flat"],
+        "highkey": ["nikon-rich-tone-portrait", "nikon-portrait", "nikon-standard"],
+        "night": ["night", "nikon-flat", "nikon-neutral"],
+        "neutral_grade": ["nikon-neutral", "nikon-flat", "nikon-standard"],
+        "general": ["nikon-standard", "nikon-neutral", "natural"],
+    },
+}
+
+# Backward-compat single map = first entry of each pool
+BRAND_SCENE_MAPS: dict[str, dict[str, str]] = {
+    brand: {scene: pool[0] for scene, pool in pools.items()}
+    for brand, pools in BRAND_SCENE_POOLS.items()
+}
+DEFAULT_SCENE_MAP: dict[str, str] = dict(BRAND_SCENE_MAPS["sony"])
 
 PREFS_PATH = Path.home() / ".photograde" / "look_prefs.json"
 
@@ -718,12 +724,18 @@ def scene_map_for_brand(brand: str) -> dict[str, str]:
     return dict(BRAND_SCENE_MAPS.get(brand, DEFAULT_SCENE_MAP))
 
 
+def scene_pools_for_brand(brand: str) -> dict[str, list[str]]:
+    return {k: list(v) for k, v in BRAND_SCENE_POOLS.get(brand, BRAND_SCENE_POOLS["sony"]).items()}
+
+
 def load_prefs() -> dict[str, Any]:
     fallback = {
         "default_look": "sony-st",
         "auto_look": True,
         "brand": "sony",
+        "sticky_look": True,
         "scene_map": dict(DEFAULT_SCENE_MAP),
+        "scene_pools": scene_pools_for_brand("sony"),
     }
     if not PREFS_PATH.exists():
         return dict(fallback)
@@ -733,17 +745,35 @@ def load_prefs() -> dict[str, Any]:
         if not isinstance(data, dict):
             return dict(fallback)
         brand = str(data.get("brand") or "sony").lower()
-        if brand not in BRAND_SCENE_MAPS:
+        if brand not in BRAND_SCENE_POOLS:
             brand = "sony"
         data["brand"] = brand
         data.setdefault("default_look", BRAND_DEFAULT_LOOK.get(brand, "sony-st"))
         data.setdefault("auto_look", True)
-        sm = scene_map_for_brand(brand)
-        # Only overlay explicit user scene_map keys that still exist
+        data.setdefault("sticky_look", True)
+
+        pools = scene_pools_for_brand(brand)
+        user_pools = data.get("scene_pools") or {}
+        if isinstance(user_pools, dict):
+            for scene, lst in user_pools.items():
+                if isinstance(lst, list) and lst:
+                    cleaned = [str(x) for x in lst if str(x) in ALL_LOOKS]
+                    if cleaned:
+                        pools[str(scene)] = cleaned
+        data["scene_pools"] = pools
+
+        # scene_map: prefer explicit user strings, else pool[0]
+        sm = {scene: pool[0] for scene, pool in pools.items()}
         user_sm = data.get("scene_map") or {}
         if isinstance(user_sm, dict):
-            sm.update({k: v for k, v in user_sm.items() if isinstance(v, str)})
+            for k, v in user_sm.items():
+                if isinstance(v, str) and v in ALL_LOOKS:
+                    sm[str(k)] = v
+                    # keep pool[0] in sync if user only set scene_map
+                    if k in pools and pools[k] and pools[k][0] != v:
+                        pools[k] = [v] + [x for x in pools[k] if x != v]
         data["scene_map"] = sm
+        data["scene_pools"] = pools
         return data
     except Exception:
         return dict(fallback)

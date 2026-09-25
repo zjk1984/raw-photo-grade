@@ -61,6 +61,34 @@ def test_brand_auto_suggest():
     assert look_n.startswith("nikon-") or look_n == "night"
 
 
+def test_pool_pick_and_sticky():
+    from look_select import suggest_look_detail
+
+    # Green/blue landscape-ish
+    img = np.zeros((64, 64, 3), dtype=np.float32)
+    img[:20] = (0.25, 0.45, 0.75)
+    img[20:] = (0.2, 0.5, 0.25)
+    s = suggest_look_detail(img, brand="fuji", auto=True, sticky=False)
+    assert s.look in s.candidates
+    assert len(s.candidates) >= 1
+    assert s.reason
+    locked = suggest_look_detail(
+        img, brand="fuji", auto=True, locked_look="fuji-classic-chrome", sticky=True
+    )
+    assert locked.look == "fuji-classic-chrome"
+    assert locked.reason == "sticky_lock"
+
+
+def test_look_compare_sheet(tmp_path):
+    from look_select import build_look_compare_sheet
+
+    a = np.full((40, 60, 3), 0.3, dtype=np.float32)
+    b = np.full((40, 60, 3), 0.7, dtype=np.float32)
+    dest = tmp_path / "cmp.jpg"
+    build_look_compare_sheet([("A", a), ("B", b)], dest)
+    assert dest.exists() and dest.stat().st_size > 500
+
+
 def test_fade_lifts_blacks():
     img = np.zeros((32, 32, 3), dtype=np.float32)
     out = apply_grade(img, {"fade": 50, "exposure": 0, "contrast": 0, "highlights": 0,

@@ -42,7 +42,7 @@ sys.path.insert(0, str(_REPO_ROOT / "shared" / "scripts"))
 sys.path.insert(0, str(_REPO_ROOT / "photo-eval-grade" / "scripts"))
 
 from eval_photo import PhotoEvaluator, organize_files, PRESET_WEIGHTS  # noqa: E402
-from look_select import suggest_look  # noqa: E402
+from look_select import build_look_compare_sheet, suggest_look_detail  # noqa: E402
 from looks import ALL_LOOKS, get_look, look_choices, load_prefs, save_prefs  # noqa: E402
 from raw_develop import apply_grade, apply_orientation, decode_raw, resize_long_edge, save_image  # noqa: E402
 import numpy as np  # noqa: E402
@@ -55,6 +55,7 @@ SESSION_DATA = {
     "evaluator": None,
     "current_preset": "general",
     "current_look": "auto",
+    "locked_look": None,
 }
 
 
@@ -214,15 +215,19 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
             tiers = [t.strip() for t in payload.get("tiers", "S,A").split(",") if t.strip()]
             look_mode = payload.get("look") or SESSION_DATA.get("current_look") or "auto"
             brand = payload.get("brand")
+            look_compare = bool(payload.get("look_compare", False))
+            sticky = bool(payload.get("sticky", True))
             SESSION_DATA["current_look"] = look_mode
             preview = bool(payload.get("preview", True))
 
             out_dir = Path.home() / "Pictures" / "PhotoGrade_Export"
             out_dir.mkdir(parents=True, exist_ok=True)
+            compare_dir = out_dir / "look_compare"
 
             keepers = [e for e in SESSION_DATA["evaluations"] if e["tier"] in tiers]
             developed = []
             raw_suffixes = {".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}
+            locked_look = SESSION_DATA.get("locked_look") if sticky and look_mode == "auto" else None
 
             for item in keepers:
                 src = Path(item["path"])
@@ -234,24 +239,46 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                     else:
                         with Image.open(src) as im:
                             rgb = np.asarray(im.convert("RGB"), dtype=np.float32) / 255.0
-                    if preview:
+                    if preview or look_compare:
                         rgb = resize_long_edge(rgb, 1600)
-                    look_name, scene_tag = suggest_look(
+                    suggestion = suggest_look_detail(
                         rgb,
                         item.get("details") or {},
                         forced=None if look_mode == "auto" else look_mode,
                         auto=(look_mode == "auto"),
                         brand=brand,
+                        locked_look=locked_look,
+                        sticky=sticky if look_mode == "auto" else False,
                     )
+                    look_name = suggestion.look
                     if look_name not in ALL_LOOKS:
                         look_name = "sony-st"
+                    if sticky and look_mode == "auto" and locked_look is None:
+                        locked_look = look_name
+                        SESSION_DATA["locked_look"] = look_name
                     graded = apply_grade(rgb, get_look(look_name))
                     save_image(graded, dest, quality=92, tiff=False)
+                    compare_sheet = None
+                    if look_compare and suggestion.candidates:
+                        compare_dir.mkdir(parents=True, exist_ok=True)
+                        panels = []
+                        for cand in suggestion.candidates[:3]:
+                            if cand not in ALL_LOOKS:
+                                continue
+                            alt = apply_grade(rgb, get_look(cand))
+                            tag = "PRIMARY" if cand == look_name else "ALT"
+                            panels.append((f"{tag}: {cand}", alt))
+                        if panels:
+                            compare_sheet = str(compare_dir / f"{src.stem}__compare.jpg")
+                            build_look_compare_sheet(panels, compare_sheet)
                     developed.append({
                         "source": str(src),
                         "output": str(dest),
                         "look": look_name,
-                        "scene_tag": scene_tag,
+                        "scene_tag": suggestion.scene_tag,
+                        "candidates": suggestion.candidates,
+                        "reason": suggestion.reason,
+                        "compare_sheet": compare_sheet,
                         "tier": item["tier"],
                     })
                 except Exception as exc:
@@ -263,6 +290,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 "output_dir": str(out_dir),
                 "developed": developed,
                 "look_mode": look_mode,
+                "locked_look": locked_look,
             })
             return
 
@@ -274,22 +302,40 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 prefs["default_look"] = payload["default_look"]
             if "auto_look" in payload:
                 prefs["auto_look"] = bool(payload["auto_look"])
+            if "sticky_look" in payload:
+                prefs["sticky_look"] = bool(payload["sticky_look"])
+                if not prefs["sticky_look"]:
+                    SESSION_DATA["locked_look"] = None
             if "brand" in payload:
                 brand = str(payload["brand"]).lower()
                 if brand in ("sony", "fuji", "nikon"):
-                    from looks import BRAND_DEFAULT_LOOK, scene_map_for_brand
+                    from looks import BRAND_DEFAULT_LOOK, scene_map_for_brand, scene_pools_for_brand
 
                     prefs["brand"] = brand
                     prefs["scene_map"] = scene_map_for_brand(brand)
-                    prefs.setdefault("default_look", BRAND_DEFAULT_LOOK[brand])
-                    if not str(prefs.get("default_look", "")).startswith(brand) and brand != "sony":
-                        prefs["default_look"] = BRAND_DEFAULT_LOOK[brand]
+                    prefs["scene_pools"] = scene_pools_for_brand(brand)
+                    prefs["default_look"] = BRAND_DEFAULT_LOOK[brand]
+                    SESSION_DATA["locked_look"] = None
             if "scene_map" in payload and isinstance(payload["scene_map"], dict):
                 prefs["scene_map"].update(payload["scene_map"])
+            if "scene_pools" in payload and isinstance(payload["scene_pools"], dict):
+                prefs.setdefault("scene_pools", {})
+                for scene, lst in payload["scene_pools"].items():
+                    if isinstance(lst, list) and lst:
+                        prefs["scene_pools"][str(scene)] = [str(x) for x in lst]
             if "look" in payload:
                 SESSION_DATA["current_look"] = payload["look"]
+                if payload["look"] != "auto":
+                    SESSION_DATA["locked_look"] = None
+            if payload.get("clear_sticky"):
+                SESSION_DATA["locked_look"] = None
             save_prefs(prefs)
-            self.send_json({"status": "ok", "prefs": prefs, "look": SESSION_DATA["current_look"]})
+            self.send_json({
+                "status": "ok",
+                "prefs": prefs,
+                "look": SESSION_DATA["current_look"],
+                "locked_look": SESSION_DATA.get("locked_look"),
+            })
             return
 
         elif path == "/api/organize":

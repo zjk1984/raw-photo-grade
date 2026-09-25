@@ -44,7 +44,27 @@ Inspired by in-camera Creative Look (JPEG grammar). RAW does not bake these in �
 | **sony-in** | Matte Instant — fade is the point. |
 | **sony-sh** | Soft high-key, bright and airy. |
 
-Pipeline / UI can use `--look auto` (optionally `--brand sony|fuji|nikon`) to pick from scene heuristics. Preferences live in `~/.photograde/look_prefs.json` (`brand`, `scene_map`, `default_look`).
+Pipeline / UI: `--look auto` uses **ordered scene pools** + secondary cues (not random). Optional `--brand sony|fuji|nikon`, `--look-compare` (export primary+alts contact sheet), sticky lock (`locked_look` in manifest / prefs `sticky_look`) keeps one look for the whole shoot. Override pools in `~/.photograde/look_prefs.json` via `scene_pools`.
+
+### Auto look selection (skill-aligned)
+
+1. Classify scene (`portrait` / `landscape` / …).
+2. Load ordered pool for brand+scene (first entry = safe default).
+3. Score pool members with image cues (colorfulness, skin, sky/green bias, …); pick winner deterministically.
+4. If sticky: lock that look for the rest of the batch / out-dir.
+5. With `--look-compare`: also write `look_compare/*__compare.jpg` for Agent Read before final full-res.
+
+Example prefs:
+
+```json
+{
+  "brand": "fuji",
+  "sticky_look": true,
+  "scene_pools": {
+    "landscape": ["fuji-classic-chrome", "fuji-velvia", "fuji-provia"]
+  }
+}
+```
 
 ## Fujifilm Film Simulation presets
 

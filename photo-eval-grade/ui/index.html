@@ -629,6 +629,12 @@
           <option value="fuji">富士 Film Simulation</option>
           <option value="nikon">尼康 Picture Control</option>
         </select>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--text-muted);">
+          <input type="checkbox" id="lookCompareCheck"> 导出 Look 对照预览（主选+备选）
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--text-muted);">
+          <input type="checkbox" id="stickyLookCheck" checked> 本批粘性锁定（一卷一滤镜）
+        </label>
       </div>
 
       <div class="form-group">
@@ -1014,15 +1020,18 @@
       try {
         const look = document.getElementById('lookSelect').value || 'auto';
         const brand = document.getElementById('brandSelect').value || 'sony';
+        const look_compare = document.getElementById('lookCompareCheck').checked;
+        const sticky = document.getElementById('stickyLookCheck').checked;
         const res = await fetch('/api/pipeline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tiers: 'S,A', look, brand, preview: true })
+          body: JSON.stringify({ tiers: 'S,A', look, brand, look_compare, sticky, preview: true })
         });
         const result = await res.json();
         const looksUsed = (result.developed || []).map(d => d.look).filter(Boolean);
         const uniqueLooks = [...new Set(looksUsed)].join(', ') || look;
-        alert(`调色完成！已导出 ${result.total_developed} 张到 ~/Pictures/PhotoGrade_Export\n品牌: ${brand}\nLook: ${uniqueLooks}`);
+        const lock = result.locked_look ? `\n粘性锁定: ${result.locked_look}` : '';
+        alert(`调色完成！已导出 ${result.total_developed} 张到 ~/Pictures/PhotoGrade_Export\n品牌: ${brand}\nLook: ${uniqueLooks}${lock}`);
       } catch (err) {
         alert('执行调色失败: ' + err.message);
       } finally {
@@ -1045,6 +1054,9 @@
       const brandSel = document.getElementById('brandSelect');
       if (data.look && lookSel) lookSel.value = data.look;
       if (data.brand && brandSel) brandSel.value = data.brand;
+      if (data.prefs && typeof data.prefs.sticky_look === 'boolean') {
+        document.getElementById('stickyLookCheck').checked = data.prefs.sticky_look;
+      }
     }).catch(() => {});
 
     document.getElementById('lookSelect').addEventListener('change', async (e) => {
@@ -1064,7 +1076,17 @@
         await fetch('/api/prefs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ brand })
+          body: JSON.stringify({ brand, clear_sticky: true })
+        });
+      } catch (_) {}
+    });
+
+    document.getElementById('stickyLookCheck').addEventListener('change', async (e) => {
+      try {
+        await fetch('/api/prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sticky_look: e.target.checked, clear_sticky: !e.target.checked })
         });
       } catch (_) {}
     });

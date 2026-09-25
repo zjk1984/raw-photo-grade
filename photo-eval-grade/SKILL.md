@@ -96,12 +96,18 @@ python3 "$SKILL_DIR/ui/app.py"
 Feed the curated S and A keepers into the sibling development skills:
 
 ```bash
-# Develop camera RAW keepers using camera-raw-grade:
-python3 camera-raw-grade/scripts/develop.py ./curated/S/ --out-dir ./edited --look natural --preview
+# Auto look: ordered scene pools + secondary cues; sticky lock; optional compare sheet
+python3 "$SKILL_DIR/scripts/pipeline.py" ./DCIM/ --tiers S,A --look auto --brand fuji \
+  --look-compare --preview --out-dir ./edited --straighten
+
+# Develop camera RAW keepers with an explicit look:
+python3 camera-raw-grade/scripts/develop.py ./curated/S/ --out-dir ./edited --look fuji-classic-chrome --preview
 
 # Straighten and crop hero shot:
 python3 shared/scripts/crop.py ./edited/DSC_0128_preview.jpg -o ./edited/DSC_0128_crop.jpg --aspect 3:2 --straighten --horizon
 ```
+
+With `--look-compare`, Read `edited/look_compare/*__compare.jpg` before committing a full-res grade (skill: preview first). Sticky lock writes `locked_look` into `pipeline_manifest.json` so one shoot keeps one grade.
 
 ---
 
