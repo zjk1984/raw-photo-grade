@@ -48,19 +48,22 @@ python3 photo-eval-grade/scripts/eval.py /path/to/shoot --filter S,A --organize 
 python3 phone-dng-grade/scripts/inspect_dng.py photo.dng
 python3 camera-raw-grade/scripts/inspect_raw.py photo.nef
 
-# 3. Develop top keepers:
-python3 camera-raw-grade/scripts/develop.py ./selected/S/ --out-dir ./edited --look natural --preview
+# 3. Develop top keepers (Sony Creative Look inspired presets available):
+python3 camera-raw-grade/scripts/develop.py ./selected/S/ --out-dir ./edited --look sony-fl --preview
 
 # 4. Or run the unified automated pipeline (Eval -> Filter -> Develop -> Crop):
-python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look natural --out-dir ./edited --straighten
+#    --look auto picks brand Creative Look / Film Sim / Picture Control from scene heuristics
+python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look auto --brand fuji --out-dir ./edited --straighten
+python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look fuji-classic-chrome --out-dir ./edited --straighten
+python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look nikon-landscape --out-dir ./edited --straighten
+python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look sony-fl --out-dir ./edited --straighten
 
 # 5. Launch the Visual Mac Desktop Application (GUI):
 python3 photo-eval-grade/ui/app.py
 # or: ./photo-eval-grade/ui/launch_app.sh
 
-# 6. Build Standalone macOS App Bundle & DMG Installer:
-./photo-eval-grade/ui/build_mac_app.sh    # Builds .app and creates .dmg installer
-./photo-eval-grade/ui/build_dmg.sh        # Generates PhotoGrade-M4-Installer.dmg
+# 6. Build Standalone macOS App Bundle:
+./photo-eval-grade/ui/build_mac_app.sh    # Builds PhotoGrade M4.app
 ```
 
 See each skill's `SKILL.md` for the full workflow.

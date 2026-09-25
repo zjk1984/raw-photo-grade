@@ -64,5 +64,7 @@ def test_pipeline_integration(temp_workspace, monkeypatch):
 
     assert manifest["total_evaluated"] == 2
     assert manifest["total_developed"] == 1
+    assert manifest["look_mode"] == "natural"
     assert manifest["developed"][0]["tier"] in {"S", "A"}
+    assert "look" in manifest["developed"][0]
     assert Path(manifest["developed"][0]["output"]).exists()

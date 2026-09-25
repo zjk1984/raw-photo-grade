@@ -549,6 +549,13 @@ class PhotoEvaluator:
             "compute_device": str(self.device) if self.device is not None else "cpu",
         }
 
+        try:
+            from look_select import classify_scene
+
+            details["scene_tag"] = classify_scene(np_rgb, details)
+        except Exception:
+            details["scene_tag"] = "general"
+
         return ImageEvaluation(
             path=str(path.resolve()),
             filename=path.name,

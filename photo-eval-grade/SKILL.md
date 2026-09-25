@@ -87,9 +87,8 @@ python3 "$SKILL_DIR/ui/app.py"
 # Or run launcher script
 "$SKILL_DIR/ui/launch_app.sh"
 
-# Build standalone macOS app bundle & DMG installer:
-"$SKILL_DIR/ui/build_mac_app.sh"   # Builds .app and .dmg installer
-"$SKILL_DIR/ui/build_dmg.sh"       # Standalone DMG creator
+# Build standalone macOS app bundle:
+"$SKILL_DIR/ui/build_mac_app.sh"   # Builds PhotoGrade M4.app
 ```
 
 ### 4. Direct Pipeline to Develop & Crop

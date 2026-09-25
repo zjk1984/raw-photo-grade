@@ -40,3 +40,9 @@ def test_system_info_endpoint(app_server):
     data = json.loads(req.read().decode("utf-8"))
     assert "device_name" in data
     assert "preset" in data
+    assert "looks" in data
+    assert "auto" in data["looks"]
+    assert "sony-fl" in data["looks"]
+    assert "fuji-velvia" in data["looks"]
+    assert "nikon-landscape" in data["looks"]
+    assert data.get("brand") in {"sony", "fuji", "nikon"}

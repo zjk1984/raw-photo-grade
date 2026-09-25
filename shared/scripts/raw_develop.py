@@ -4,8 +4,9 @@
 Not a skill by itself. Each skill's own scripts/develop.py imports `run()`
 from here and supplies its own LOOKS presets, default look, and accepted
 file suffixes. The image-processing math (exposure, tone, color, clarity,
-noise reduction, sharpen, vignette) is camera-agnostic; only the LOOKS
-numbers and the RAW decode call should differ per camera family.
+noise reduction, sharpen, vignette, fade, HSL zones, 3D LUT) is
+camera-agnostic; only the LOOKS numbers and the RAW decode call should
+differ per camera family.
 """
 
 from __future__ import annotations
@@ -18,23 +19,18 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from looks import SLIDER_KEYS, STRING_KEYS, complete_params  # noqa: E402
+from lut3d import apply_lut, load_cube  # noqa: E402
 from raw_common import collect_inputs, linear_to_srgb, luma, require_rawpy, srgb_to_linear  # noqa: E402
 
-SLIDER_KEYS = [
-    "exposure",
-    "contrast",
-    "highlights",
-    "shadows",
-    "whites",
-    "blacks",
-    "temperature",
-    "tint",
-    "vibrance",
-    "saturation",
-    "clarity",
-    "vignette",
-    "sharpen",
-    "noise_luma",
+# Re-export for callers that imported SLIDER_KEYS from here
+__all__ = [
+    "SLIDER_KEYS",
+    "apply_grade",
+    "decode_raw",
+    "run",
+    "merge_params",
+    "parse_args",
 ]
 
 
@@ -53,25 +49,34 @@ def parse_args(looks: dict, default_look: str, description: str) -> argparse.Nam
     p.add_argument("--bright", type=float, default=1.0, help="rawpy bright")
     p.add_argument("--no-auto-bright", action="store_true")
     p.add_argument("--orient", default="auto", help="auto|0|90|180|270")
+    p.add_argument("--lut", default=None, help="Path to .cube 3D LUT")
+    p.add_argument("--lut-amount", type=int, default=None, help="0-100 LUT blend")
     for key in SLIDER_KEYS:
+        if key == "lut_amount":
+            continue
         typ = float if key == "exposure" else int
         p.add_argument(f"--{key.replace('_', '-')}", type=typ, default=None)
     return p.parse_args()
 
 
 def merge_params(args: argparse.Namespace, looks: dict) -> dict:
-    params = dict(looks[args.look])
+    params = complete_params(looks[args.look])
     params["look"] = args.look
     if args.params:
         with open(args.params, encoding="utf-8") as fh:
             extra = json.load(fh)
         if isinstance(extra, dict):
-            params.update({k: extra[k] for k in extra if k in SLIDER_KEYS or k == "look"})
+            params.update({k: extra[k] for k in extra if k in SLIDER_KEYS or k in STRING_KEYS or k == "look"})
     for key in SLIDER_KEYS:
-        cli = getattr(args, key)
+        if key == "lut_amount":
+            cli = getattr(args, "lut_amount", None)
+        else:
+            cli = getattr(args, key, None)
         if cli is not None:
             params[key] = cli
-    return params
+    if getattr(args, "lut", None):
+        params["lut"] = args.lut
+    return complete_params(params)
 
 
 def decode_raw(path: Path, bright: float, no_auto_bright: bool) -> np.ndarray:
@@ -118,12 +123,12 @@ def _exif_orientation_degrees(path: Path) -> int:
 
 
 def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
+    p = complete_params(p)
     lin = srgb_to_linear(np.clip(rgb, 0, 1))
 
     if p["exposure"]:
         lin *= 2.0 ** float(p["exposure"])
 
-    # Temperature / tint in linear-ish RGB
     temp = float(p["temperature"]) / 100.0
     tint = float(p["tint"]) / 100.0
     if temp or tint:
@@ -135,7 +140,6 @@ def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
     lin = np.clip(lin, 0, None)
     y = luma(lin)
 
-    # Highlights / shadows via luminance masks
     hi = float(p["highlights"]) / 100.0
     sh = float(p["shadows"]) / 100.0
     if hi or sh:
@@ -149,7 +153,6 @@ def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
             lin = lin + sh_mask * sh * 0.12
             lin *= 1.0 + sh_mask * sh * 0.15
 
-    # Whites / blacks — pivot near ends
     wh = float(p["whites"]) / 100.0
     bl = float(p["blacks"]) / 100.0
     if wh:
@@ -158,7 +161,6 @@ def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
         lin = lin + bl * 0.04
         lin = np.clip(lin, 0, None)
 
-    # Contrast around mid-grey in linear
     contrast = float(p["contrast"]) / 100.0
     if contrast:
         mid = 0.18
@@ -167,6 +169,14 @@ def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
 
     srgb = np.clip(linear_to_srgb(lin), 0, 1)
 
+    # Fade (Sony Creative Look): lift blacks + soft matte ceiling
+    fade = float(p.get("fade", 0)) / 100.0
+    if fade:
+        black_lift = fade * 0.14
+        white_crush = fade * 0.08
+        srgb = black_lift + srgb * (1.0 - black_lift - white_crush)
+        srgb = np.clip(srgb, 0, 1)
+
     sat = float(p["saturation"]) / 100.0
     vib = float(p["vibrance"]) / 100.0
     if sat or vib:
@@ -174,13 +184,22 @@ def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
         if sat:
             srgb = gray + (srgb - gray) * (1.0 + sat)
         if vib:
-            # Vibrance protects already-saturated pixels
             mx = srgb.max(axis=2, keepdims=True)
             mn = srgb.min(axis=2, keepdims=True)
             already = np.clip((mx - mn) * 1.6, 0, 1)
             srgb = gray + (srgb - gray) * (1.0 + vib * (1.0 - already))
 
     srgb = np.clip(srgb, 0, 1)
+    srgb = _hsl_zones(srgb, p)
+
+    lut_path = str(p.get("lut") or "").strip()
+    lut_amount = float(p.get("lut_amount", 0)) / 100.0
+    if lut_path and lut_amount > 0:
+        try:
+            table, size = load_cube(lut_path)
+            srgb = apply_lut(srgb, table, size, amount=lut_amount)
+        except Exception as exc:
+            print(f"warning: LUT skipped ({lut_path}): {exc}", file=sys.stderr)
 
     if p["clarity"]:
         srgb = _clarity(srgb, float(p["clarity"]) / 100.0)
@@ -189,15 +208,76 @@ def apply_grade(rgb: np.ndarray, p: dict) -> np.ndarray:
     if p["vignette"]:
         srgb = _vignette(srgb, float(p["vignette"]) / 100.0)
     if p["sharpen"]:
-        srgb = _sharpen(srgb, float(p["sharpen"]) / 100.0)
+        srgb = _sharpen(srgb, float(p["sharpen"]) / 100.0, int(p.get("sharpen_range", 2) or 2))
 
     return np.clip(srgb, 0, 1)
+
+
+def _rgb_to_hsv(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    diff = mx - mn
+    v = mx
+    s = np.where(mx > 1e-8, diff / np.maximum(mx, 1e-8), 0.0)
+    h = np.zeros_like(mx)
+    mask = diff > 1e-8
+    rc = ((mx - r) / np.maximum(diff, 1e-8))
+    gc = ((mx - g) / np.maximum(diff, 1e-8))
+    bc = ((mx - b) / np.maximum(diff, 1e-8))
+    h = np.where(mask & (mx == r), (bc - gc) / 6.0 % 1.0, h)
+    h = np.where(mask & (mx == g), (2.0 + rc - bc) / 6.0 % 1.0, h)
+    h = np.where(mask & (mx == b), (4.0 + gc - rc) / 6.0 % 1.0, h)
+    return h, s, v
+
+
+def _hsv_to_rgb(h: np.ndarray, s: np.ndarray, v: np.ndarray) -> np.ndarray:
+    h6 = (h % 1.0) * 6.0
+    i = np.floor(h6).astype(np.int32)
+    f = h6 - i
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    i_mod = i % 6
+    r = np.choose(i_mod, [v, q, p, p, t, v])
+    g = np.choose(i_mod, [t, v, v, q, p, p])
+    b = np.choose(i_mod, [p, p, t, v, v, q])
+    return np.stack([r, g, b], axis=-1)
+
+
+def _hue_weight(h: np.ndarray, center: float, width: float) -> np.ndarray:
+    """Soft circular distance weight around hue center in [0,1]."""
+    d = np.abs(h - center)
+    d = np.minimum(d, 1.0 - d)
+    return np.clip(1.0 - d / max(width, 1e-6), 0.0, 1.0)
+
+
+def _hsl_zones(srgb: np.ndarray, p: dict) -> np.ndarray:
+    skin_h = float(p.get("hsl_skin_hue", 0))
+    skin_s = float(p.get("hsl_skin_sat", 0))
+    sky_h = float(p.get("hsl_sky_hue", 0))
+    sky_s = float(p.get("hsl_sky_sat", 0))
+    green_h = float(p.get("hsl_green_hue", 0))
+    green_s = float(p.get("hsl_green_sat", 0))
+    if not any([skin_h, skin_s, sky_h, sky_s, green_h, green_s]):
+        return srgb
+
+    h, s, v = _rgb_to_hsv(np.clip(srgb, 0, 1))
+    # skin ~ orange-red, sky ~ cyan-blue, green ~ foliage
+    w_skin = np.maximum(_hue_weight(h, 0.04, 0.08), _hue_weight(h, 0.96, 0.06))
+    w_sky = _hue_weight(h, 0.58, 0.12)
+    w_green = _hue_weight(h, 0.33, 0.10)
+
+    dh = (w_skin * skin_h + w_sky * sky_h + w_green * green_h) / 100.0 * 0.08
+    ds = (w_skin * skin_s + w_sky * sky_s + w_green * green_s) / 100.0
+    h = (h + dh) % 1.0
+    s = np.clip(s * (1.0 + ds), 0.0, 1.0)
+    return np.clip(_hsv_to_rgb(h, s, v), 0, 1)
 
 
 def _box_blur(img: np.ndarray, radius: int) -> np.ndarray:
     if radius < 1:
         return img
-    # Separable box via cumulative sum — fast enough for previews and full-res stills
     pad = radius
     x = np.pad(img, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
     c = np.cumsum(x, axis=0)
@@ -209,15 +289,17 @@ def _box_blur(img: np.ndarray, radius: int) -> np.ndarray:
 
 
 def _clarity(img: np.ndarray, amount: float) -> np.ndarray:
-    # Mid-frequency contrast (unsharp with large radius)
     h, w = img.shape[:2]
     radius = max(3, int(min(h, w) * 0.012))
     blur = _box_blur(img, radius)
     return img + (img - blur) * amount * 1.4
 
 
-def _sharpen(img: np.ndarray, amount: float) -> np.ndarray:
-    radius = 1 if min(img.shape[:2]) < 2000 else 2
+def _sharpen(img: np.ndarray, amount: float, sharpen_range: int = 2) -> np.ndarray:
+    # Sony Sharpness Range ≈ kernel radius (1..5)
+    radius = int(np.clip(sharpen_range, 1, 5))
+    if min(img.shape[:2]) < 1200:
+        radius = max(1, radius - 1)
     blur = _box_blur(img, radius)
     return img + (img - blur) * amount * 1.8
 
@@ -225,7 +307,6 @@ def _sharpen(img: np.ndarray, amount: float) -> np.ndarray:
 def _luma_nr(img: np.ndarray, amount: float) -> np.ndarray:
     y = luma(img)
     radius = 1 if amount < 0.15 else 2
-    # blur only luma, keep chroma
     y3 = np.repeat(y[..., None], 3, axis=2)
     yb = _box_blur(y3, radius)[..., 0]
     chroma = img - y[..., None]

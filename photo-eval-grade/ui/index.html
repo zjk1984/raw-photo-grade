@@ -623,6 +623,63 @@
       </div>
 
       <div class="form-group">
+        <div class="panel-title">大师滤镜品牌（自动选 Look 时）</div>
+        <select id="brandSelect">
+          <option value="sony" selected>索尼 Creative Look</option>
+          <option value="fuji">富士 Film Simulation</option>
+          <option value="nikon">尼康 Picture Control</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <div class="panel-title">调色 Look</div>
+        <select id="lookSelect">
+          <option value="auto" selected>自动（按场景 + 品牌）</option>
+          <optgroup label="索尼 Creative Look">
+            <option value="sony-st">sony-st · Standard</option>
+            <option value="sony-pt">sony-pt · Portrait</option>
+            <option value="sony-nt">sony-nt · Neutral</option>
+            <option value="sony-vv">sony-vv · Vivid</option>
+            <option value="sony-vv2">sony-vv2 · Vivid 2</option>
+            <option value="sony-fl">sony-fl · Film</option>
+            <option value="sony-fl2">sony-fl2 · Film 2</option>
+            <option value="sony-in">sony-in · Instant</option>
+            <option value="sony-sh">sony-sh · Soft Highkey</option>
+          </optgroup>
+          <optgroup label="富士 Film Simulation">
+            <option value="fuji-provia">fuji-provia · PROVIA/Standard</option>
+            <option value="fuji-astia">fuji-astia · ASTIA/Soft</option>
+            <option value="fuji-velvia">fuji-velvia · VELVIA/Vivid</option>
+            <option value="fuji-classic-chrome">fuji-classic-chrome · Classic Chrome</option>
+            <option value="fuji-classic-neg">fuji-classic-neg · Classic Neg</option>
+            <option value="fuji-nostalgic-neg">fuji-nostalgic-neg · Nostalgic Neg</option>
+            <option value="fuji-eterna">fuji-eterna · ETERNA/Cinema</option>
+            <option value="fuji-acros">fuji-acros · ACROS (B&amp;W)</option>
+          </optgroup>
+          <optgroup label="尼康 Picture Control">
+            <option value="nikon-standard">nikon-standard · Standard</option>
+            <option value="nikon-neutral">nikon-neutral · Neutral</option>
+            <option value="nikon-vivid">nikon-vivid · Vivid</option>
+            <option value="nikon-portrait">nikon-portrait · Portrait</option>
+            <option value="nikon-rich-tone-portrait">nikon-rich-tone-portrait · Rich Tone Portrait</option>
+            <option value="nikon-landscape">nikon-landscape · Landscape</option>
+            <option value="nikon-flat">nikon-flat · Flat</option>
+            <option value="nikon-monochrome">nikon-monochrome · Monochrome</option>
+          </optgroup>
+          <optgroup label="经典">
+            <option value="natural">natural · 自然</option>
+            <option value="portrait">portrait · 人像经典</option>
+            <option value="warm-golden">warm-golden · 暖金</option>
+            <option value="cool-cinematic">cool-cinematic · 冷电影</option>
+            <option value="travel">travel · 旅行</option>
+            <option value="night">night · 夜景</option>
+            <option value="editorial-flat">editorial-flat · 平面</option>
+            <option value="neutral">neutral · 诊断中性</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <div class="form-group">
         <div class="panel-title">分级统计</div>
         <div class="stats-card">
           <div class="tier-stat-row">
@@ -955,13 +1012,17 @@
       loadingText.textContent = `正在使用 M4 加速调色与水平校正 ${sAndACount} 张精选照片...`;
 
       try {
+        const look = document.getElementById('lookSelect').value || 'auto';
+        const brand = document.getElementById('brandSelect').value || 'sony';
         const res = await fetch('/api/pipeline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tiers: 'S,A', look: 'natural' })
+          body: JSON.stringify({ tiers: 'S,A', look, brand, preview: true })
         });
         const result = await res.json();
-        alert(`调色完成！已成功导出 ${result.total_developed} 张照片到 ~/Pictures/PhotoGrade_Export 目录。`);
+        const looksUsed = (result.developed || []).map(d => d.look).filter(Boolean);
+        const uniqueLooks = [...new Set(looksUsed)].join(', ') || look;
+        alert(`调色完成！已导出 ${result.total_developed} 张到 ~/Pictures/PhotoGrade_Export\n品牌: ${brand}\nLook: ${uniqueLooks}`);
       } catch (err) {
         alert('执行调色失败: ' + err.message);
       } finally {
@@ -977,10 +1038,36 @@
       alert(`已成功自动分类整理到目录: ${data.path}`);
     });
 
-    // 初始化硬件状态获取
+    // 初始化硬件状态 + Look 偏好
     fetch('/api/system_info').then(r => r.json()).then(data => {
       document.getElementById('deviceText').textContent = data.device_name || 'Apple M4 MPS (Metal) Ready';
+      const lookSel = document.getElementById('lookSelect');
+      const brandSel = document.getElementById('brandSelect');
+      if (data.look && lookSel) lookSel.value = data.look;
+      if (data.brand && brandSel) brandSel.value = data.brand;
     }).catch(() => {});
+
+    document.getElementById('lookSelect').addEventListener('change', async (e) => {
+      const look = e.target.value;
+      try {
+        await fetch('/api/prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ look, auto_look: look === 'auto' })
+        });
+      } catch (_) {}
+    });
+
+    document.getElementById('brandSelect').addEventListener('change', async (e) => {
+      const brand = e.target.value;
+      try {
+        await fetch('/api/prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ brand })
+        });
+      } catch (_) {}
+    });
   </script>
 </body>
 </html>
