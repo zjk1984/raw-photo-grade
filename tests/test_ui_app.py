@@ -45,4 +45,7 @@ def test_system_info_endpoint(app_server):
     assert "sony-fl" in data["looks"]
     assert "fuji-velvia" in data["looks"]
     assert "nikon-landscape" in data["looks"]
-    assert data.get("brand") in {"sony", "fuji", "nikon"}
+    assert data.get("brand") in {"sony", "fuji", "nikon", "apple", "canon", "auto"}
+    assert "photo_root" in data
+    assert data["photo_root"].endswith("photo") or "Documents" in data["photo_root"]
+    assert "edited_dir" in data and "curated_dir" in data

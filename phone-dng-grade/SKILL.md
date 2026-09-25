@@ -37,9 +37,12 @@ python3 "$SKILL_DIR/scripts/develop.py" photo.dng -o out.jpg --look natural --pr
 When working through a shoot of phone DNGs / ProRAW, evaluate and rank them first using M4 GPU acceleration:
 
 ```bash
+# iPhone 17 Pro / Pro Max ProRAW-aware scoring (default for this script)
 python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --preset general
 python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --filter S,A --organize ./selected
 ```
+
+See `photo-eval-grade/references/raw-sensor-eval.md`.
 
 ### 1. Inventory
 

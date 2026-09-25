@@ -24,6 +24,7 @@ EXIFTOOL_KEYS = [
     "Model",
     "Lens",
     "LensModel",
+    "LensID",
     "Software",
     "DateTimeOriginal",
     "ISO",
@@ -36,6 +37,10 @@ EXIFTOOL_KEYS = [
     "ColorMatrix2",
     "AsShotNeutral",
     "UniqueCameraModel",
+    "CameraModelName",
+    "CameraModel",
+    "Manufacturer",
+    "HostComputer",
     "DNGVersion",
     "ImageWidth",
     "ImageHeight",
@@ -45,22 +50,40 @@ EXIFTOOL_KEYS = [
 
 
 def exiftool_tags(path: Path) -> dict:
-    if not shutil.which("exiftool"):
-        return {}
+    """Read camera identity + exposure tags. Prefer exiftool; fall back to Pillow."""
+    path = Path(path)
+    if shutil.which("exiftool"):
+        try:
+            raw = subprocess.check_output(
+                ["exiftool", "-json", "-n"] + [f"-{k}" for k in EXIFTOOL_KEYS] + [str(path)],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            arr = json.loads(raw)
+            if arr:
+                row = arr[0]
+                row.pop("SourceFile", None)
+                return row
+        except Exception:
+            pass
+    # Pillow fallback (JPEG / some DNG)
     try:
-        raw = subprocess.check_output(
-            ["exiftool", "-json", "-n"] + [f"-{k}" for k in EXIFTOOL_KEYS] + [str(path)],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        arr = json.loads(raw)
-        if arr:
-            row = arr[0]
-            row.pop("SourceFile", None)
-            return row
+        from PIL import Image
+        from PIL.ExifTags import TAGS
+
+        with Image.open(path) as im:
+            raw_exif = im.getexif()
+            if not raw_exif:
+                return {}
+            out = {}
+            for tag_id, value in raw_exif.items():
+                name = TAGS.get(tag_id, str(tag_id))
+                if name in EXIFTOOL_KEYS or name in {"Make", "Model", "Software", "LensModel"}:
+                    out[name] = value
+            # IFD 0x8769 often holds EXIF sub-IFD; skip deep walk for speed
+            return out
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def inspect_one(path: Path, classify: Callable[[dict], tuple[str, str]]) -> dict:

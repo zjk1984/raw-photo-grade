@@ -673,20 +673,26 @@ BRAND_DEFAULT_LOOK: dict[str, str] = {
     "sony": "sony-st",
     "fuji": "fuji-provia",
     "nikon": "nikon-standard",
+    "apple": "natural",
+    "canon": "natural",
 }
 
-# Ordered candidate pools per brand/scene (first = safe default).
-# Secondary heuristics pick within the pool; sticky lock keeps one look per shoot.
+# Candidate pools per brand/scene. Sticky lock keeps one look per shoot.
+# Brand is normally chosen from EXIF Make/Model (see camera_grade.detect_look_brand).
+#
+# Sony Creative Look pools also include Fuji Film Sim + Nikon Picture Control
+# as candidates; pick_from_pool chooses among them via secondary cue heuristics
+# (pool order is only a deterministic tie-break, not a Sony bias).
 BRAND_SCENE_POOLS: dict[str, dict[str, list[str]]] = {
     "sony": {
-        "portrait": ["sony-pt", "sony-st", "sony-sh"],
-        "landscape": ["sony-fl", "sony-vv2", "sony-st"],
-        "vivid": ["sony-vv2", "sony-vv", "sony-fl"],
-        "matte": ["sony-in", "sony-fl2", "sony-nt"],
-        "highkey": ["sony-sh", "sony-pt", "sony-st"],
-        "night": ["night", "sony-fl", "sony-nt"],
-        "neutral_grade": ["sony-nt", "sony-st", "editorial-flat"],
-        "general": ["sony-st", "sony-fl", "natural"],
+        "portrait": ["sony-pt", "fuji-astia", "nikon-portrait"],
+        "landscape": ["sony-fl", "fuji-classic-chrome", "nikon-landscape"],
+        "vivid": ["sony-vv2", "fuji-velvia", "nikon-vivid"],
+        "matte": ["sony-in", "fuji-classic-chrome", "nikon-flat"],
+        "highkey": ["sony-sh", "fuji-astia", "nikon-rich-tone-portrait"],
+        "night": ["night", "fuji-eterna", "nikon-flat"],
+        "neutral_grade": ["sony-nt", "fuji-eterna", "nikon-neutral"],
+        "general": ["sony-st", "fuji-provia", "nikon-standard"],
     },
     "fuji": {
         "portrait": ["fuji-astia", "fuji-provia", "fuji-nostalgic-neg"],
@@ -708,6 +714,28 @@ BRAND_SCENE_POOLS: dict[str, dict[str, list[str]]] = {
         "neutral_grade": ["nikon-neutral", "nikon-flat", "nikon-standard"],
         "general": ["nikon-standard", "nikon-neutral", "natural"],
     },
+    # iPhone / phone ProRAW — softer pools; body adapter tames NR/clarity further
+    "apple": {
+        "portrait": ["portrait", "fuji-astia", "sony-pt"],
+        "landscape": ["fuji-classic-chrome", "travel", "sony-fl"],
+        "vivid": ["travel", "sony-vv", "fuji-velvia"],
+        "matte": ["editorial-flat", "fuji-classic-chrome", "sony-in"],
+        "highkey": ["sony-sh", "fuji-astia", "portrait"],
+        "night": ["night", "cool-cinematic", "sony-nt"],
+        "neutral_grade": ["neutral", "editorial-flat", "sony-nt"],
+        "general": ["natural", "sony-st", "fuji-provia"],
+    },
+    # Canon Picture Style not modeled yet — classic + mild Sony looks
+    "canon": {
+        "portrait": ["portrait", "sony-pt", "natural"],
+        "landscape": ["travel", "sony-fl", "natural"],
+        "vivid": ["travel", "sony-vv", "natural"],
+        "matte": ["editorial-flat", "sony-in", "neutral"],
+        "highkey": ["sony-sh", "portrait", "natural"],
+        "night": ["night", "cool-cinematic", "neutral"],
+        "neutral_grade": ["neutral", "editorial-flat", "sony-nt"],
+        "general": ["natural", "sony-st", "travel"],
+    },
 }
 
 # Backward-compat single map = first entry of each pool
@@ -718,6 +746,23 @@ BRAND_SCENE_MAPS: dict[str, dict[str, str]] = {
 DEFAULT_SCENE_MAP: dict[str, str] = dict(BRAND_SCENE_MAPS["sony"])
 
 PREFS_PATH = Path.home() / ".photograde" / "look_prefs.json"
+
+# Default library root for this machine (override via prefs photo_root).
+DEFAULT_PHOTO_ROOT = Path("/Users/zjk/Documents/photo")
+
+
+def photo_root(prefs: dict[str, Any] | None = None) -> Path:
+    data = prefs if prefs is not None else load_prefs()
+    raw = data.get("photo_root") or str(DEFAULT_PHOTO_ROOT)
+    return Path(str(raw)).expanduser().resolve()
+
+
+def edited_dir(prefs: dict[str, Any] | None = None) -> Path:
+    return photo_root(prefs) / "edited"
+
+
+def curated_dir(prefs: dict[str, Any] | None = None) -> Path:
+    return photo_root(prefs) / "curated"
 
 
 def scene_map_for_brand(brand: str) -> dict[str, str]:
@@ -734,6 +779,7 @@ def load_prefs() -> dict[str, Any]:
         "auto_look": True,
         "brand": "sony",
         "sticky_look": True,
+        "photo_root": str(DEFAULT_PHOTO_ROOT),
         "scene_map": dict(DEFAULT_SCENE_MAP),
         "scene_pools": scene_pools_for_brand("sony"),
     }
@@ -745,14 +791,28 @@ def load_prefs() -> dict[str, Any]:
         if not isinstance(data, dict):
             return dict(fallback)
         brand = str(data.get("brand") or "sony").lower()
-        if brand not in BRAND_SCENE_POOLS:
+        if brand == "auto":
+            data["brand"] = "auto"
+            # Prefs pools stay on last concrete brand or sony for UI fallbacks
+            pool_brand = "sony"
+        elif brand not in BRAND_SCENE_POOLS:
             brand = "sony"
-        data["brand"] = brand
-        data.setdefault("default_look", BRAND_DEFAULT_LOOK.get(brand, "sony-st"))
+            data["brand"] = brand
+            pool_brand = brand
+        else:
+            data["brand"] = brand
+            pool_brand = brand
+        data.setdefault("default_look", BRAND_DEFAULT_LOOK.get(pool_brand, "sony-st"))
         data.setdefault("auto_look", True)
         data.setdefault("sticky_look", True)
+        data.setdefault("photo_root", str(DEFAULT_PHOTO_ROOT))
+        # Normalize photo_root
+        try:
+            data["photo_root"] = str(Path(str(data["photo_root"])).expanduser())
+        except Exception:
+            data["photo_root"] = str(DEFAULT_PHOTO_ROOT)
 
-        pools = scene_pools_for_brand(brand)
+        pools = scene_pools_for_brand(pool_brand)
         user_pools = data.get("scene_pools") or {}
         if isinstance(user_pools, dict):
             for scene, lst in user_pools.items():
@@ -805,14 +865,14 @@ def get_look(name: str, looks: dict[str, dict[str, Any]] | None = None) -> dict[
 
 
 def phone_looks() -> dict[str, dict[str, Any]]:
-    """Phone-tuned: slightly higher noise reduction, softer clarity."""
+    """Phone-tuned baseline; body adapters (iPhone 17 …) add further deltas at develop time."""
     out: dict[str, dict[str, Any]] = {}
     for name, base in ALL_LOOKS.items():
         p = dict(base)
-        p["noise_luma"] = int(p.get("noise_luma", 0)) + 4
-        p["clarity"] = max(0, int(p.get("clarity", 0)) - 2)
+        p["noise_luma"] = int(p.get("noise_luma", 0)) + 2
+        p["clarity"] = max(0, int(p.get("clarity", 0)) - 1)
         if name == "night":
-            p["noise_luma"] = 22
+            p["noise_luma"] = 18
             p["exposure"] = 0.25
             p["highlights"] = -30
         out[name] = p

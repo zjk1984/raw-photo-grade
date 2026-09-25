@@ -43,7 +43,16 @@ sys.path.insert(0, str(_REPO_ROOT / "photo-eval-grade" / "scripts"))
 
 from eval_photo import PhotoEvaluator, organize_files, PRESET_WEIGHTS  # noqa: E402
 from look_select import build_look_compare_sheet, suggest_look_detail  # noqa: E402
-from looks import ALL_LOOKS, get_look, look_choices, load_prefs, save_prefs  # noqa: E402
+from looks import (  # noqa: E402
+    ALL_LOOKS,
+    curated_dir,
+    edited_dir,
+    get_look,
+    look_choices,
+    load_prefs,
+    photo_root,
+    save_prefs,
+)
 from raw_develop import apply_grade, apply_orientation, decode_raw, resize_long_edge, save_image  # noqa: E402
 import numpy as np  # noqa: E402
 import pipeline  # noqa: E402
@@ -98,6 +107,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
         elif path == "/api/system_info":
             evaluator = SESSION_DATA["evaluator"]
             prefs = load_prefs()
+            root = photo_root(prefs)
             dev_name = "Apple M4 MPS (Metal) Ready" if evaluator and str(evaluator.device) == "mps" else "Apple Silicon M4 Accelerated"
             self.send_json({
                 "device_name": dev_name,
@@ -106,6 +116,9 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 "brand": prefs.get("brand", "sony"),
                 "looks": ["auto"] + look_choices(),
                 "prefs": prefs,
+                "photo_root": str(root),
+                "edited_dir": str(edited_dir(prefs)),
+                "curated_dir": str(curated_dir(prefs)),
             })
             return
 
@@ -214,13 +227,14 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
             tiers = [t.strip() for t in payload.get("tiers", "S,A").split(",") if t.strip()]
             look_mode = payload.get("look") or SESSION_DATA.get("current_look") or "auto"
-            brand = payload.get("brand")
+            brand_payload = payload.get("brand")
+            force_brand = None if (not brand_payload or brand_payload == "auto") else str(brand_payload).lower()
             look_compare = bool(payload.get("look_compare", False))
             sticky = bool(payload.get("sticky", True))
             SESSION_DATA["current_look"] = look_mode
             preview = bool(payload.get("preview", True))
 
-            out_dir = Path.home() / "Pictures" / "PhotoGrade_Export"
+            out_dir = edited_dir()
             out_dir.mkdir(parents=True, exist_ok=True)
             compare_dir = out_dir / "look_compare"
 
@@ -228,6 +242,10 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
             developed = []
             raw_suffixes = {".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}
             locked_look = SESSION_DATA.get("locked_look") if sticky and look_mode == "auto" else None
+            locked_brand = SESSION_DATA.get("locked_brand") if sticky and look_mode == "auto" else None
+
+            from camera_grade import look_params_for_camera, resolve_grade_adapter
+            from raw_inspect import exiftool_tags
 
             for item in keepers:
                 src = Path(item["path"])
@@ -241,22 +259,49 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                             rgb = np.asarray(im.convert("RGB"), dtype=np.float32) / 255.0
                     if preview or look_compare:
                         rgb = resize_long_edge(rgb, 1600)
+
+                    details = dict(item.get("details") or {})
+                    try:
+                        exif = exiftool_tags(src)
+                        _adapter, meta = resolve_grade_adapter(src, exif)
+                        details.setdefault("look_brand", meta["brand"])
+                        details["grade_adapter"] = meta["adapter_id"]
+                        exif_brand = meta["brand"]
+                    except Exception:
+                        exif_brand = details.get("look_brand")
+                    brand_for_file = force_brand or exif_brand
+
+                    use_lock = (
+                        locked_look
+                        if (
+                            sticky
+                            and look_mode == "auto"
+                            and locked_look
+                            and (locked_brand is None or locked_brand == brand_for_file)
+                        )
+                        else None
+                    )
                     suggestion = suggest_look_detail(
                         rgb,
-                        item.get("details") or {},
+                        details,
                         forced=None if look_mode == "auto" else look_mode,
                         auto=(look_mode == "auto"),
-                        brand=brand,
-                        locked_look=locked_look,
+                        brand=brand_for_file,
+                        locked_look=use_lock,
                         sticky=sticky if look_mode == "auto" else False,
                     )
                     look_name = suggestion.look
                     if look_name not in ALL_LOOKS:
                         look_name = "sony-st"
-                    if sticky and look_mode == "auto" and locked_look is None:
+                    if sticky and look_mode == "auto" and (
+                        locked_look is None or locked_brand != brand_for_file
+                    ):
                         locked_look = look_name
+                        locked_brand = brand_for_file
                         SESSION_DATA["locked_look"] = look_name
-                    graded = apply_grade(rgb, get_look(look_name))
+                        SESSION_DATA["locked_brand"] = brand_for_file
+                    params, grade_meta = look_params_for_camera(look_name, path=src)
+                    graded = apply_grade(rgb, params)
                     save_image(graded, dest, quality=92, tiff=False)
                     compare_sheet = None
                     if look_compare and suggestion.candidates:
@@ -265,7 +310,8 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                         for cand in suggestion.candidates[:3]:
                             if cand not in ALL_LOOKS:
                                 continue
-                            alt = apply_grade(rgb, get_look(cand))
+                            alt_params, _ = look_params_for_camera(cand, path=src)
+                            alt = apply_grade(rgb, alt_params)
                             tag = "PRIMARY" if cand == look_name else "ALT"
                             panels.append((f"{tag}: {cand}", alt))
                         if panels:
@@ -278,6 +324,9 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                         "scene_tag": suggestion.scene_tag,
                         "candidates": suggestion.candidates,
                         "reason": suggestion.reason,
+                        "brand": grade_meta.get("brand") or brand_for_file,
+                        "grade_adapter": grade_meta.get("adapter_id"),
+                        "camera_model": grade_meta.get("camera_model"),
                         "compare_sheet": compare_sheet,
                         "tier": item["tier"],
                     })
@@ -291,6 +340,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 "developed": developed,
                 "look_mode": look_mode,
                 "locked_look": locked_look,
+                "locked_brand": locked_brand,
             })
             return
 
@@ -302,19 +352,31 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 prefs["default_look"] = payload["default_look"]
             if "auto_look" in payload:
                 prefs["auto_look"] = bool(payload["auto_look"])
+            if "photo_root" in payload:
+                root = Path(str(payload["photo_root"])).expanduser()
+                prefs["photo_root"] = str(root)
             if "sticky_look" in payload:
                 prefs["sticky_look"] = bool(payload["sticky_look"])
                 if not prefs["sticky_look"]:
                     SESSION_DATA["locked_look"] = None
             if "brand" in payload:
                 brand = str(payload["brand"]).lower()
-                if brand in ("sony", "fuji", "nikon"):
+                if brand == "auto":
+                    prefs["brand"] = "auto"
+                    save_prefs(prefs)
+                    SESSION_DATA["locked_look"] = None
+                    SESSION_DATA["locked_brand"] = None
+                elif brand in ("sony", "fuji", "nikon", "apple", "canon"):
                     from looks import BRAND_DEFAULT_LOOK, scene_map_for_brand, scene_pools_for_brand
 
                     prefs["brand"] = brand
                     prefs["scene_map"] = scene_map_for_brand(brand)
                     prefs["scene_pools"] = scene_pools_for_brand(brand)
                     prefs["default_look"] = BRAND_DEFAULT_LOOK[brand]
+                    if payload.get("clear_sticky", True):
+                        SESSION_DATA["locked_look"] = None
+                        SESSION_DATA["locked_brand"] = None
+                    save_prefs(prefs)
                     SESSION_DATA["locked_look"] = None
             if "scene_map" in payload and isinstance(payload["scene_map"], dict):
                 prefs["scene_map"].update(payload["scene_map"])
@@ -339,7 +401,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/organize":
-            out_dir = Path.home() / "Pictures" / "PhotoGrade_Curated"
+            out_dir = curated_dir()
             out_dir.mkdir(parents=True, exist_ok=True)
             for item in SESSION_DATA["evaluations"]:
                 src = Path(item["path"])
@@ -348,6 +410,89 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 shutil.copy2(src, tier_dir / src.name)
 
             self.send_json({"status": "success", "path": str(out_dir)})
+            return
+
+        elif path == "/api/evaluate_folder":
+            # Scan default photo_root (or payload path) without browser file upload
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            prefs = load_prefs()
+            folder = Path(payload.get("path") or photo_root(prefs)).expanduser()
+            preset = payload.get("preset") or SESSION_DATA.get("current_preset") or "general"
+            SESSION_DATA["current_preset"] = preset
+
+            if not folder.is_dir():
+                self.send_json({"error": f"Folder not found: {folder}"}, status=400)
+                return
+
+            from eval_photo import ALL_SUPPORTED_SUFFIXES
+
+            skip_dirs = {"curated", "edited", "selected", "PhotoGrade_Export", "PhotoGrade_Curated", "look_compare"}
+            files = sorted(
+                f for f in folder.iterdir()
+                if f.is_file()
+                and f.suffix in ALL_SUPPORTED_SUFFIXES
+                and not f.name.startswith(".")
+            )
+            # Also allow one-level shoot subfolders, but skip known output dirs
+            for sub in sorted(folder.iterdir()):
+                if not sub.is_dir() or sub.name.startswith(".") or sub.name in skip_dirs:
+                    continue
+                for f in sorted(sub.iterdir()):
+                    if f.is_file() and f.suffix in ALL_SUPPORTED_SUFFIXES and not f.name.startswith("."):
+                        files.append(f)
+
+            evaluator = PhotoEvaluator(
+                device_name="auto",
+                weights=PRESET_WEIGHTS.get(preset),
+            )
+            SESSION_DATA["evaluator"] = evaluator
+
+            temp_dir = Path(tempfile.gettempdir()) / "photograde_m4_session"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            results = []
+            SESSION_DATA["temp_files"].clear()
+
+            for idx, src in enumerate(files):
+                thumb_file = temp_dir / f"thumb_{idx}.jpg"
+                try:
+                    ev = evaluator.evaluate(src)
+                    try:
+                        with Image.open(src) as im:
+                            im.thumbnail((480, 480))
+                            im.convert("RGB").save(thumb_file, "JPEG", quality=85)
+                    except Exception:
+                        try:
+                            rgb = resize_long_edge(decode_raw(src, 1.0, False), 480)
+                            Image.fromarray((np.clip(rgb, 0, 1) * 255).astype("uint8")).save(
+                                thumb_file, "JPEG", quality=85
+                            )
+                        except Exception:
+                            Image.new("RGB", (160, 120), (40, 40, 48)).save(thumb_file, "JPEG")
+                    SESSION_DATA["temp_files"][idx] = str(thumb_file)
+                    # Keep real path for develop/organize (not a temp upload copy)
+                    results.append({
+                        "path": str(src.resolve()),
+                        "filename": src.name,
+                        "overall_score": ev.overall_score,
+                        "tier": ev.tier,
+                        "sharpness": ev.sharpness,
+                        "dynamic_range": ev.dynamic_range,
+                        "noise_control": ev.noise_control,
+                        "color_harmony": ev.color_harmony,
+                        "composition": ev.composition,
+                        "flags": ev.flags,
+                        "details": ev.details,
+                    })
+                except Exception as e:
+                    print(f"Error evaluating {src.name}: {e}", file=sys.stderr)
+
+            SESSION_DATA["evaluations"] = results
+            self.send_json({
+                "results": results,
+                "folder": str(folder),
+                "total": len(results),
+            })
             return
 
         self.send_error(404, "Route not found")

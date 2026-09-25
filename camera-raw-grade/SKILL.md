@@ -39,9 +39,12 @@ python3 "$SKILL_DIR/scripts/develop.py" photo.nef -o out.jpg --look natural --pr
 When working through a large shoot, evaluate and rank photos first using M4 GPU acceleration to pick the keepers before developing:
 
 ```bash
+# Sony α7C / IMX410 RAW-aware scoring (default profile for this script)
 python3 "$SKILL_DIR/scripts/eval_raw.py" path/to/folder --preset landscape
 python3 "$SKILL_DIR/scripts/eval_raw.py" path/to/folder --filter S,A --organize ./selected
 ```
+
+See `photo-eval-grade/references/raw-sensor-eval.md` for headroom / focus / ISO-noise metrics.
 
 ### 1. Inventory
 

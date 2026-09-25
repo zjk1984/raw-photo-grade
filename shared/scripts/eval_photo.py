@@ -144,11 +144,15 @@ class PhotoEvaluator:
         weights: dict[str, float] | None = None,
         max_edge: int = 1920,
         use_half_raw: bool = True,
+        raw_aware: bool = True,
+        sensor_profile: str | None = None,
     ):
         self.device = get_torch_device(device_name)
         self.weights = dict(weights or DEFAULT_WEIGHTS)
         self.max_edge = max_edge
         self.use_half_raw = use_half_raw
+        self.raw_aware = raw_aware
+        self.sensor_profile_prefer = sensor_profile
 
     def load_image(self, path: Path) -> tuple[np.ndarray, Any]:
         """Load an image (RAW or standard) and return normalized RGB np.ndarray [H,W,3] in 0..1,
@@ -488,14 +492,77 @@ class PhotoEvaluator:
 
     def evaluate(self, path: Path) -> ImageEvaluation:
         """Run full multi-dimensional quality assessment on an image."""
+        path = Path(path)
         np_rgb, tensor_img = self.load_image(path)
 
-        # 1. Metric calculations
+        # 1. Metric calculations (RGB / demosaic preview path)
         sharpness, raw_sharp = self.compute_sharpness(np_rgb, tensor_img)
         dr_score, dr_details, flags = self.compute_dynamic_range(np_rgb, tensor_img)
         noise_score, raw_noise = self.compute_noise_control(np_rgb, tensor_img)
         color_score, color_details = self.compute_color_harmony(np_rgb)
         comp_score, comp_details = self.compute_composition(np_rgb)
+
+        profile = None
+        raw_ctx: dict[str, Any] = {}
+        if self.raw_aware and path.suffix in RAW_SUFFIXES:
+            try:
+                from raw_inspect import exiftool_tags
+                from raw_eval_metrics import (
+                    extract_raw_context,
+                    merge_scores,
+                    score_raw_dynamic_range,
+                    score_raw_noise,
+                    score_raw_sharpness,
+                )
+                from sensor_profiles import camera_identity, detect_sensor_profile_with_reason
+
+                exif = exiftool_tags(path)
+                profile, match_reason = detect_sensor_profile_with_reason(
+                    path, exif, prefer=self.sensor_profile_prefer
+                )
+                ident = camera_identity(exif)
+                raw_ctx = extract_raw_context(path, profile, exif)
+                r_sharp = score_raw_sharpness(float(raw_ctx["raw_edge95"]), profile)
+                r_dr, raw_flags = score_raw_dynamic_range(raw_ctx, profile)
+                r_noise = score_raw_noise(raw_ctx, profile)
+                merged = merge_scores(
+                    {
+                        "sharpness": sharpness,
+                        "dynamic_range": dr_score,
+                        "noise_control": noise_score,
+                        "color_harmony": color_score,
+                        "composition": comp_score,
+                    },
+                    r_sharp,
+                    r_dr,
+                    r_noise,
+                    profile,
+                )
+                sharpness = merged["sharpness"]
+                dr_score = merged["dynamic_range"]
+                noise_score = merged["noise_control"]
+                for f in raw_flags:
+                    if f not in flags:
+                        flags.append(f)
+                details_raw = {k: v for k, v in raw_ctx.items() if k != "crop_rgb"}
+                raw_ctx = details_raw
+                raw_ctx["rgb_sharpness_preview"] = raw_sharp
+                raw_ctx["raw_sharpness_score"] = r_sharp
+                raw_ctx["raw_dr_score"] = r_dr
+                raw_ctx["raw_noise_score"] = r_noise
+                raw_ctx["camera_make"] = ident["make_raw"]
+                raw_ctx["camera_model"] = ident["model_raw"]
+                raw_ctx["profile_match"] = match_reason
+                try:
+                    from camera_grade import detect_look_brand
+
+                    look_brand, brand_reason = detect_look_brand(exif, path=path)
+                    raw_ctx["look_brand"] = look_brand
+                    raw_ctx["look_brand_reason"] = brand_reason
+                except Exception:
+                    pass
+            except Exception as exc:
+                raw_ctx = {"raw_aware_error": str(exc)}
 
         # 2. Weighted overall score
         w = self.weights
@@ -507,18 +574,21 @@ class PhotoEvaluator:
             + comp_score * w["composition"]
         )
 
-        # 3. Rule-based vetoes and penalty adjustments
-        # Critical blur veto:
-        if sharpness < 28.0:
+        # 3. Rule-based vetoes — thresholds from sensor profile when available
+        blur_cut = float(profile.blur_sharp) if profile else 28.0
+        soft_cut = float(profile.soft_sharp) if profile else 42.0
+        if sharpness < blur_cut:
             if "blurry" not in flags:
                 flags.append("blurry")
             overall -= 22.0
-        elif sharpness < 42.0:
+        elif sharpness < soft_cut:
             overall -= 10.0
 
-        # Severe clipping vetoes:
-        if "clipped_highlights" in flags:
-            overall -= 14.0
+        if "clipped_highlights" in flags or "raw_highlight_clip" in flags:
+            if "clipped_highlights" in flags:
+                overall -= 14.0
+            elif "raw_highlight_clip" in flags:
+                overall -= 8.0  # recoverable raw clip softer penalty
         if "crushed_shadows" in flags:
             overall -= 8.0
         if abs(comp_details.get("tilt_angle_deg", 0.0)) >= 4.0:
@@ -526,17 +596,16 @@ class PhotoEvaluator:
 
         overall = round(float(np.clip(overall, 0.0, 100.0)), 1)
 
-        # 4. Tier classification: S, A, B, C
-        # S-Tier: Outstanding technical and aesthetic score, no major flags
-        if overall >= 85.0 and not any(f in flags for f in ["blurry", "clipped_highlights", "underexposed"]):
+        # 4. Tier classification
+        hard_blur = "blurry" in flags
+        if overall >= 85.0 and not any(
+            f in flags for f in ["blurry", "clipped_highlights", "underexposed"]
+        ):
             tier = "S"
-        # A-Tier: Strong candidate, slight tuning needed
-        elif overall >= 72.0 and "blurry" not in flags:
+        elif overall >= 72.0 and not hard_blur:
             tier = "A"
-        # B-Tier: Acceptable backup or requires heavier post-processing
         elif overall >= 58.0:
             tier = "B"
-        # C-Tier: Reject / Discard
         else:
             tier = "C"
 
@@ -547,6 +616,10 @@ class PhotoEvaluator:
             **color_details,
             **comp_details,
             "compute_device": str(self.device) if self.device is not None else "cpu",
+            "sensor_profile": profile.id if profile else None,
+            "sensor_label": profile.label if profile else None,
+            "raw_aware": bool(profile),
+            **raw_ctx,
         }
 
         try:
@@ -642,6 +715,8 @@ def run_eval(
     organize_dir: str | None = None,
     organize_method: str = "copy",
     max_edge: int = 1920,
+    raw_aware: bool = True,
+    sensor_profile: str | None = None,
 ) -> int:
     """Core CLI execution function."""
     selected_weights = weights or PRESET_WEIGHTS.get(preset, DEFAULT_WEIGHTS)
@@ -649,6 +724,8 @@ def run_eval(
         device_name=device,
         weights=selected_weights,
         max_edge=max_edge,
+        raw_aware=raw_aware,
+        sensor_profile=sensor_profile,
     )
 
     # Collect files
@@ -755,9 +832,22 @@ def main() -> int:
         default=1920,
         help="Longest edge downsample size for evaluation (default: 1920)",
     )
+    parser.add_argument(
+        "--raw-aware",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Blend sensor-level RAW metrics (headroom/focus/ISO noise). Default: on",
+    )
+    parser.add_argument(
+        "--sensor-profile",
+        default=None,
+        choices=["sony_a7c_imx410", "iphone_17_promax", "auto"],
+        help="Force sensor profile (default: auto-detect from EXIF)",
+    )
     args = parser.parse_args()
 
     filter_list = [x.strip() for x in args.filter_tiers.split(",")] if args.filter_tiers else None
+    prefer = None if not args.sensor_profile or args.sensor_profile == "auto" else args.sensor_profile
 
     return run_eval(
         inputs=args.inputs,
@@ -768,6 +858,8 @@ def main() -> int:
         organize_dir=args.organize_dir,
         organize_method=args.organize_method,
         max_edge=args.max_edge,
+        raw_aware=args.raw_aware,
+        sensor_profile=prefer,
     )
 
 

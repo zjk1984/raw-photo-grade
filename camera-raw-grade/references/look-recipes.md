@@ -44,14 +44,37 @@ Inspired by in-camera Creative Look (JPEG grammar). RAW does not bake these in �
 | **sony-in** | Matte Instant — fade is the point. |
 | **sony-sh** | Soft high-key, bright and airy. |
 
-Pipeline / UI: `--look auto` uses **ordered scene pools** + secondary cues (not random). Optional `--brand sony|fuji|nikon`, `--look-compare` (export primary+alts contact sheet), sticky lock (`locked_look` in manifest / prefs `sticky_look`) keeps one look for the whole shoot. Override pools in `~/.photograde/look_prefs.json` via `scene_pools`.
+Pipeline / UI: `--look auto` uses **ordered scene pools** + secondary cues (not random).
+**Brand defaults from EXIF** (`Make`/`Model` → sony / fuji / nikon / apple / canon);
+optional `--brand sony|fuji|nikon|apple|canon` to force. Body **grade adapters** then
+tweak sliders per sensor (α7C tint/NR, iPhone 17 highlight protect, …). Sticky lock
+is per-brand so mixed shoots re-pick. Override pools in `~/.photograde/look_prefs.json`.
+
+**Sony Creative Look pools** list Sony + Fuji + Nikon candidates; **secondary cue
+heuristics** pick the winner (colorfulness → Velvia, skin → Astia/PT, muted → Classic
+Chrome, …). Pool order is only a tie-break when scores are equal.
+
+### Camera-aware grade (EXIF)
+
+| EXIF cue | Look pools | Body adapter |
+| --- | --- | --- |
+| `SONY` + `ILCE-7C` | sony Creative Look | `sony_a7c_imx410` — +tint, −NR, +clarity |
+| `SONY` + `ILCE-7C2` / `7M3` | sony | `sony_ff_24mp` |
+| `FUJIFILM` / `.RAF` | fuji Film Simulation | `fuji_raf` — ease vibrance/sharpen |
+| `NIKON` / `.NEF` | nikon Picture Control | `nikon_nef` — slight warm |
+| `Apple` + iPhone 17 Pro/Max | apple (softer pools) | `iphone_17_promax` — +NR, −clarity, protect highlights |
+| Other iPhone ProRAW | apple | `iphone_proraw` |
+| Canon CR2/CR3 | canon | `canon_cr` |
+
+Develop CLI applies the same adapters automatically (`--no-camera-adapt` to disable).
+Manifest records `brand`, `grade_adapter`, `camera_model`.
 
 ### Auto look selection (skill-aligned)
 
 1. Classify scene (`portrait` / `landscape` / …).
-2. Load ordered pool for brand+scene (first entry = safe default).
-3. Score pool members with image cues (colorfulness, skin, sky/green bias, …); pick winner deterministically.
-4. If sticky: lock that look for the rest of the batch / out-dir.
+2. Load candidate pool for brand+scene (Sony brand = Sony+Fuji+Nikon looks).
+3. **Secondary heuristics** score each candidate from image cues; highest wins (pool order only breaks ties).
+4. If sticky: lock that look for the rest of the batch / out-dir (same brand).
 5. With `--look-compare`: also write `look_compare/*__compare.jpg` for Agent Read before final full-res.
 
 Example prefs:

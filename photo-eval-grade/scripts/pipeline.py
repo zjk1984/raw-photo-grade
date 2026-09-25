@@ -26,6 +26,26 @@ from PIL import Image
 import numpy as np
 
 
+def _grade_context(src: Path, details: dict | None = None) -> tuple[str | None, dict]:
+    """Resolve look brand + fill details with EXIF camera cues."""
+    details = dict(details or {})
+    try:
+        from camera_grade import resolve_grade_adapter
+        from raw_inspect import exiftool_tags
+
+        exif = exiftool_tags(src)
+        adapter, meta = resolve_grade_adapter(src, exif)
+        details.setdefault("look_brand", meta["brand"])
+        details.setdefault("camera_make", meta.get("camera_make") or "")
+        details.setdefault("camera_model", meta.get("camera_model") or "")
+        details["grade_adapter"] = meta["adapter_id"]
+        details["grade_adapter_label"] = meta["adapter_label"]
+        details["look_brand_reason"] = meta.get("brand_reason", "")
+        return adapter.brand, details
+    except Exception:
+        return details.get("look_brand"), details
+
+
 def _load_rgb(src: Path) -> np.ndarray:
     if src.suffix.lower() in {".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}:
         rgb = decode_raw(src, bright=1.0, no_auto_bright=False)
@@ -50,7 +70,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="M4 GPU Auto Pipeline: Evaluate -> Filter S/A Keepers -> Develop -> Crop"
     )
-    parser.add_argument("inputs", nargs="+", help="RAW/photo directory or file list")
+    parser.add_argument(
+        "inputs",
+        nargs="*",
+        help="RAW/photo directory or file list (default: prefs photo_root)",
+    )
     parser.add_argument("--tiers", default="S,A", help="Tiers to develop (default: S,A)")
     parser.add_argument("--device", default="auto", choices=["auto", "mps", "cuda", "cpu"])
     parser.add_argument("--preset", default="general", help="Evaluation preset")
@@ -63,8 +87,8 @@ def main() -> int:
     parser.add_argument(
         "--brand",
         default=None,
-        choices=["sony", "fuji", "nikon"],
-        help="When --look auto: brand look pools (default: prefs)",
+        choices=["auto", "sony", "fuji", "nikon", "apple", "canon"],
+        help="Look pools: auto=EXIF Make/Model (default), or force a brand",
     )
     parser.add_argument(
         "--look-compare",
@@ -76,30 +100,47 @@ def main() -> int:
         action="store_true",
         help="Disable one-shoot sticky look lock (default: sticky on for auto)",
     )
-    parser.add_argument("--out-dir", required=True, help="Directory to save final developed photos")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="Directory to save developed photos (default: <photo_root>/edited)",
+    )
     parser.add_argument("--straighten", action="store_true", help="Auto-level horizon")
     parser.add_argument("--preview", action="store_true", help="Output 1600px preview instead of full-res")
     parser.add_argument("--quality", type=int, default=92, help="JPEG export quality (default: 92)")
     args = parser.parse_args()
 
-    out_path = Path(args.out_dir).expanduser()
-    out_path.mkdir(parents=True, exist_ok=True)
+    from looks import edited_dir, photo_root
+
     prefs = load_prefs()
+    root = photo_root(prefs)
+    if not args.inputs:
+        args.inputs = [str(root)]
+        print(f"==> Using default photo root: {root}", file=sys.stderr)
+    out_path = Path(args.out_dir).expanduser() if args.out_dir else edited_dir(prefs)
+    out_path.mkdir(parents=True, exist_ok=True)
     sticky = (not args.no_sticky) and bool(prefs.get("sticky_look", True))
 
     # Resume sticky lock from prior run in same out-dir (one shoot, one grade)
     locked_look: str | None = None
+    locked_brand: str | None = None
     manifest_path = out_path / "pipeline_manifest.json"
     if sticky and args.look == "auto" and manifest_path.exists():
         try:
             prev = json.loads(manifest_path.read_text(encoding="utf-8"))
             locked_look = prev.get("locked_look") or None
+            locked_brand = prev.get("locked_brand") or None
             if locked_look and locked_look not in ALL_LOOKS:
                 locked_look = None
             if locked_look:
-                print(f"==> Sticky lock from prior manifest: {locked_look}", file=sys.stderr)
+                print(
+                    f"==> Sticky lock from prior manifest: {locked_look}"
+                    + (f" (brand={locked_brand})" if locked_brand else ""),
+                    file=sys.stderr,
+                )
         except Exception:
             locked_look = None
+            locked_brand = None
 
     print(f"==> Step 1: Evaluating photos using M4/Metal GPU (device: {args.device})...", file=sys.stderr)
     evaluator = PhotoEvaluator(device_name=args.device)
@@ -160,6 +201,8 @@ def main() -> int:
 
     developed_records = []
     compare_dir = out_path / "look_compare"
+    force_brand = None if (not args.brand or args.brand == "auto") else args.brand
+
     for ev in keepers:
         src = Path(ev.path)
         dest_name = f"{src.stem}_graded.jpg"
@@ -171,13 +214,28 @@ def main() -> int:
         if args.preview or args.look_compare:
             rgb = resize_long_edge(rgb, 1600)
 
+        exif_brand, details = _grade_context(src, ev.details)
+        brand_for_file = force_brand or exif_brand
+
+        # Sticky only within the same camera brand (mixed shoots re-pick)
+        use_lock = (
+            locked_look
+            if (
+                sticky
+                and args.look == "auto"
+                and locked_look
+                and (locked_brand is None or locked_brand == brand_for_file)
+            )
+            else None
+        )
+
         suggestion = suggest_look_detail(
             rgb,
-            ev.details,
+            details,
             forced=None if args.look == "auto" else args.look,
             auto=(args.look == "auto"),
-            brand=args.brand,
-            locked_look=locked_look if args.look == "auto" else None,
+            brand=brand_for_file,
+            locked_look=use_lock,
             sticky=sticky if args.look == "auto" else False,
         )
         look_name = suggestion.look
@@ -185,12 +243,15 @@ def main() -> int:
             look_name = prefs.get("default_look", "sony-st")
             suggestion.look = look_name
 
-        # Establish sticky lock on first auto pick of this run
-        if sticky and args.look == "auto" and locked_look is None:
+        # Establish sticky lock on first auto pick of this run / brand
+        if sticky and args.look == "auto" and (locked_look is None or locked_brand != brand_for_file):
             locked_look = look_name
-            print(f"  sticky lock set -> {locked_look}", file=sys.stderr)
+            locked_brand = brand_for_file
+            print(f"  sticky lock set -> {locked_look} (brand={locked_brand})", file=sys.stderr)
 
-        params = get_look(look_name)
+        from camera_grade import look_params_for_camera
+
+        params, grade_meta = look_params_for_camera(look_name, path=src)
         graded = apply_grade(rgb, params)
         if args.straighten:
             graded = _maybe_straighten(graded)
@@ -204,7 +265,8 @@ def main() -> int:
             for cand in suggestion.candidates[:3]:
                 if cand not in ALL_LOOKS:
                     continue
-                alt = apply_grade(rgb, get_look(cand))
+                alt_params, _ = look_params_for_camera(cand, path=src)
+                alt = apply_grade(rgb, alt_params)
                 tag = "PRIMARY" if cand == look_name else "ALT"
                 label = f"{tag}: {cand}"
                 alt_path = compare_dir / f"{src.stem}__{cand}.jpg"
@@ -225,12 +287,17 @@ def main() -> int:
             "scene_tag": suggestion.scene_tag,
             "candidates": suggestion.candidates,
             "reason": suggestion.reason,
+            "brand": grade_meta.get("brand") or brand_for_file,
+            "grade_adapter": grade_meta.get("adapter_id"),
+            "camera_make": grade_meta.get("camera_make"),
+            "camera_model": grade_meta.get("camera_model"),
             "sticky": suggestion.sticky or (sticky and locked_look == look_name and args.look == "auto"),
             "compare_outputs": compare_outputs,
             "compare_sheet": str(sheet_path) if sheet_path else None,
         })
         print(
-            f"  look={look_name} scene={suggestion.scene_tag} reason={suggestion.reason} "
+            f"  look={look_name} brand={grade_meta.get('brand')} adapter={grade_meta.get('adapter_id')} "
+            f"scene={suggestion.scene_tag} reason={suggestion.reason} "
             f"candidates={suggestion.candidates}",
             file=sys.stderr,
         )
@@ -238,9 +305,10 @@ def main() -> int:
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump({
             "look_mode": args.look,
-            "brand": args.brand or prefs.get("brand"),
+            "brand": force_brand or locked_brand or prefs.get("brand"),
             "sticky_look": sticky,
             "locked_look": locked_look if args.look == "auto" else None,
+            "locked_brand": locked_brand if args.look == "auto" else None,
             "look_compare": args.look_compare,
             "target_tiers": list(target_tiers),
             "total_evaluated": len(evals),

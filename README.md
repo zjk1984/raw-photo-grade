@@ -52,8 +52,8 @@ python3 camera-raw-grade/scripts/inspect_raw.py photo.nef
 python3 camera-raw-grade/scripts/develop.py ./selected/S/ --out-dir ./edited --look sony-fl --preview
 
 # 4. Or run the unified automated pipeline (Eval -> Filter -> Develop -> Crop):
-#    --look auto: pool + secondary cues; --look-compare: preview alternates; sticky lock by default
-python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look auto --brand fuji --look-compare --out-dir ./edited --straighten
+# Auto look (defaults to /Users/zjk/Documents/photo → edited/)
+python3 photo-eval-grade/scripts/pipeline.py --tiers S,A --look auto --brand fuji --look-compare --preview --straighten
 python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look fuji-classic-chrome --out-dir ./edited --straighten
 python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look nikon-landscape --out-dir ./edited --straighten
 python3 photo-eval-grade/scripts/pipeline.py /path/to/shoot --tiers S,A --look sony-fl --out-dir ./edited --straighten

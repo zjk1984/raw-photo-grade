@@ -22,7 +22,9 @@ Named looks are starting points. After the first preview, change 2–4 sliders, 
 | noise_luma | 0 … 12 daylight, 16–28 night | 40 (plastic) |
 | fade / hsl_* / lut | see camera-raw-grade look-recipes | Sony Creative Look presets shared |
 
-Phone defaults keep higher `noise_luma` and slightly softer `clarity`. Use `sony-*` / `fuji-*` / `nikon-*` or pipeline `--look auto --brand fuji|nikon|sony`.
+Phone defaults keep slightly higher `noise_luma` and softer `clarity`. At develop time,
+EXIF body adapters add more (iPhone 17 Pro Max: stronger NR, highlight protect, lower LUT).
+Pipeline `--look auto` picks **apple** look pools from Make/Model; force with `--brand apple`.
 
 Units: exposure is EV. Everything else is roughly −100…+100 like Lightroom, but the implementation is simpler — treat numbers as taste, not as a Lightroom match.
 

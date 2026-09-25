@@ -51,6 +51,11 @@ def parse_args(looks: dict, default_look: str, description: str) -> argparse.Nam
     p.add_argument("--orient", default="auto", help="auto|0|90|180|270")
     p.add_argument("--lut", default=None, help="Path to .cube 3D LUT")
     p.add_argument("--lut-amount", type=int, default=None, help="0-100 LUT blend")
+    p.add_argument(
+        "--no-camera-adapt",
+        action="store_true",
+        help="Disable EXIF body grade adapter (α7C / iPhone deltas)",
+    )
     for key in SLIDER_KEYS:
         if key == "lut_amount":
             continue
@@ -367,13 +372,29 @@ def process_one(src: Path, dest: Path, args: argparse.Namespace, params: dict) -
         long_edge = 1600
     if long_edge:
         rgb = resize_long_edge(rgb, long_edge)
-    graded = apply_grade(rgb, params)
+    # Per-file EXIF body adapter (α7C / iPhone / …) unless disabled
+    file_params = params
+    grade_meta: dict = {}
+    if not getattr(args, "no_camera_adapt", False):
+        try:
+            from camera_grade import apply_adapter, resolve_grade_adapter
+            from raw_inspect import exiftool_tags
+
+            exif = exiftool_tags(src)
+            adapter, grade_meta = resolve_grade_adapter(src, exif)
+            file_params = apply_adapter(params, adapter)
+        except Exception as exc:
+            grade_meta = {"adapter_error": str(exc)}
+    graded = apply_grade(rgb, file_params)
     save_image(graded, dest, args.quality, args.tiff)
     return {
         "input": str(src),
         "output": str(dest),
         "pixels": list(graded.shape[:2]),
-        "params": params,
+        "params": file_params,
+        "grade_adapter": grade_meta.get("adapter_id"),
+        "camera_model": grade_meta.get("camera_model"),
+        "brand": grade_meta.get("brand"),
     }
 
 
@@ -389,7 +410,14 @@ def run(looks: dict, default_look: str, suffixes: set[str], description: str) ->
     for src in files:
         dest = dest_path(src, args)
         print(f"develop  {src.name}  ->  {dest}", file=sys.stderr)
-        reports.append(process_one(src, dest, args, params))
+        report = process_one(src, dest, args, params)
+        if report.get("grade_adapter"):
+            print(
+                f"  adapter={report['grade_adapter']} brand={report.get('brand')} "
+                f"model={report.get('camera_model')}",
+                file=sys.stderr,
+            )
+        reports.append(report)
     json.dump(reports if len(reports) > 1 else reports[0], sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0

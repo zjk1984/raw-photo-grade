@@ -603,6 +603,10 @@
     <aside>
       <div class="form-group">
         <div class="panel-title">照片导入 (RAW / JPEG)</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.4;">
+          默认目录：<code id="photoRootLabel" style="color:var(--text-main);">/Users/zjk/Documents/photo</code>
+        </div>
+        <button class="btn" id="btnScanDefault" style="width:100%;justify-content:center;margin-bottom:10px;">📂 扫描默认目录</button>
         <div class="dropzone" id="dropArea">
           <div class="dropzone-icon">📁</div>
           <div class="dropzone-text">点击或拖拽照片 / 文件夹</div>
@@ -625,9 +629,12 @@
       <div class="form-group">
         <div class="panel-title">大师滤镜品牌（自动选 Look 时）</div>
         <select id="brandSelect">
-          <option value="sony" selected>索尼 Creative Look</option>
+          <option value="auto" selected>自动（按 EXIF 机身）</option>
+          <option value="sony">索尼 Creative Look（含富士/尼康）</option>
           <option value="fuji">富士 Film Simulation</option>
           <option value="nikon">尼康 Picture Control</option>
+          <option value="apple">Apple / iPhone</option>
+          <option value="canon">佳能</option>
         </select>
         <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--text-muted);">
           <input type="checkbox" id="lookCompareCheck"> 导出 Look 对照预览（主选+备选）
@@ -641,7 +648,7 @@
         <div class="panel-title">调色 Look</div>
         <select id="lookSelect">
           <option value="auto" selected>自动（按场景 + 品牌）</option>
-          <optgroup label="索尼 Creative Look">
+          <optgroup label="索尼 Creative Look（含富士 / 尼康）">
             <option value="sony-st">sony-st · Standard</option>
             <option value="sony-pt">sony-pt · Portrait</option>
             <option value="sony-nt">sony-nt · Neutral</option>
@@ -651,8 +658,24 @@
             <option value="sony-fl2">sony-fl2 · Film 2</option>
             <option value="sony-in">sony-in · Instant</option>
             <option value="sony-sh">sony-sh · Soft Highkey</option>
+            <option value="fuji-provia">fuji-provia · PROVIA/Standard</option>
+            <option value="fuji-astia">fuji-astia · ASTIA/Soft</option>
+            <option value="fuji-velvia">fuji-velvia · VELVIA/Vivid</option>
+            <option value="fuji-classic-chrome">fuji-classic-chrome · Classic Chrome</option>
+            <option value="fuji-classic-neg">fuji-classic-neg · Classic Neg</option>
+            <option value="fuji-nostalgic-neg">fuji-nostalgic-neg · Nostalgic Neg</option>
+            <option value="fuji-eterna">fuji-eterna · ETERNA/Cinema</option>
+            <option value="fuji-acros">fuji-acros · ACROS (B&amp;W)</option>
+            <option value="nikon-standard">nikon-standard · Standard</option>
+            <option value="nikon-neutral">nikon-neutral · Neutral</option>
+            <option value="nikon-vivid">nikon-vivid · Vivid</option>
+            <option value="nikon-portrait">nikon-portrait · Portrait</option>
+            <option value="nikon-rich-tone-portrait">nikon-rich-tone-portrait · Rich Tone Portrait</option>
+            <option value="nikon-landscape">nikon-landscape · Landscape</option>
+            <option value="nikon-flat">nikon-flat · Flat</option>
+            <option value="nikon-monochrome">nikon-monochrome · Monochrome</option>
           </optgroup>
-          <optgroup label="富士 Film Simulation">
+          <optgroup label="富士 Film Simulation（专用池）">
             <option value="fuji-provia">fuji-provia · PROVIA/Standard</option>
             <option value="fuji-astia">fuji-astia · ASTIA/Soft</option>
             <option value="fuji-velvia">fuji-velvia · VELVIA/Vivid</option>
@@ -662,7 +685,7 @@
             <option value="fuji-eterna">fuji-eterna · ETERNA/Cinema</option>
             <option value="fuji-acros">fuji-acros · ACROS (B&amp;W)</option>
           </optgroup>
-          <optgroup label="尼康 Picture Control">
+          <optgroup label="尼康 Picture Control（专用池）">
             <option value="nikon-standard">nikon-standard · Standard</option>
             <option value="nikon-neutral">nikon-neutral · Neutral</option>
             <option value="nikon-vivid">nikon-vivid · Vivid</option>
@@ -861,6 +884,17 @@
     });
 
     // 处理文件导入并调用后端评估 API
+    function applyEvalResults(data) {
+      if (!data.results) return;
+      photoData = data.results.map((item, index) => ({
+        ...item,
+        id: index,
+        thumbUrl: `/api/thumbnail?id=${index}`
+      }));
+      updateStats();
+      renderGrid();
+    }
+
     async function handleFiles(files) {
       loadingOverlay.classList.remove('hidden');
       loadingText.textContent = `正在使用 Apple M4 GPU 评估 ${files.length} 张照片...`;
@@ -877,21 +911,40 @@
           body: formData
         });
         const data = await res.json();
-        if (data.results) {
-          photoData = data.results.map((item, index) => ({
-            ...item,
-            id: index,
-            thumbUrl: `/api/thumbnail?id=${index}`
-          }));
-          updateStats();
-          renderGrid();
-        }
+        applyEvalResults(data);
       } catch (err) {
         alert('评估出错: ' + err.message);
       } finally {
         loadingOverlay.classList.add('hidden');
       }
     }
+
+    document.getElementById('btnScanDefault').addEventListener('click', async () => {
+      loadingOverlay.classList.remove('hidden');
+      loadingText.textContent = '正在扫描默认目录并使用 M4 GPU 评估...';
+      try {
+        const res = await fetch('/api/evaluate_folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            preset: document.getElementById('presetSelect').value
+          })
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert(data.error);
+          return;
+        }
+        applyEvalResults(data);
+        if (!data.total) {
+          alert(`默认目录暂无支持的照片：${data.folder || ''}`);
+        }
+      } catch (err) {
+        alert('扫描默认目录失败: ' + err.message);
+      } finally {
+        loadingOverlay.classList.add('hidden');
+      }
+    });
 
     function updateStats() {
       const counts = { S: 0, A: 0, B: 0, C: 0 };
@@ -1019,7 +1072,7 @@
 
       try {
         const look = document.getElementById('lookSelect').value || 'auto';
-        const brand = document.getElementById('brandSelect').value || 'sony';
+        const brand = document.getElementById('brandSelect').value || 'auto';
         const look_compare = document.getElementById('lookCompareCheck').checked;
         const sticky = document.getElementById('stickyLookCheck').checked;
         const res = await fetch('/api/pipeline', {
@@ -1031,7 +1084,7 @@
         const looksUsed = (result.developed || []).map(d => d.look).filter(Boolean);
         const uniqueLooks = [...new Set(looksUsed)].join(', ') || look;
         const lock = result.locked_look ? `\n粘性锁定: ${result.locked_look}` : '';
-        alert(`调色完成！已导出 ${result.total_developed} 张到 ~/Pictures/PhotoGrade_Export\n品牌: ${brand}\nLook: ${uniqueLooks}${lock}`);
+        alert(`调色完成！已导出 ${result.total_developed} 张到 ${result.output_dir || '/Users/zjk/Documents/photo/edited'}\n品牌: ${brand}\nLook: ${uniqueLooks}${lock}`);
       } catch (err) {
         alert('执行调色失败: ' + err.message);
       } finally {
@@ -1044,7 +1097,7 @@
       if (photoData.length === 0) return alert('请先导入照片');
       const res = await fetch('/api/organize', { method: 'POST' });
       const data = await res.json();
-      alert(`已成功自动分类整理到目录: ${data.path}`);
+      alert(`已成功自动分类整理到目录: ${data.path || (window.__photoPaths && window.__photoPaths.curated) || '/Users/zjk/Documents/photo/curated'}`);
     });
 
     // 初始化硬件状态 + Look 偏好
@@ -1054,9 +1107,17 @@
       const brandSel = document.getElementById('brandSelect');
       if (data.look && lookSel) lookSel.value = data.look;
       if (data.brand && brandSel) brandSel.value = data.brand;
+      if (data.photo_root) {
+        document.getElementById('photoRootLabel').textContent = data.photo_root;
+      }
       if (data.prefs && typeof data.prefs.sticky_look === 'boolean') {
         document.getElementById('stickyLookCheck').checked = data.prefs.sticky_look;
       }
+      window.__photoPaths = {
+        root: data.photo_root,
+        edited: data.edited_dir,
+        curated: data.curated_dir,
+      };
     }).catch(() => {});
 
     document.getElementById('lookSelect').addEventListener('change', async (e) => {

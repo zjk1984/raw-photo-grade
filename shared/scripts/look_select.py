@@ -101,79 +101,122 @@ def extract_cues(np_rgb: np.ndarray, details: dict[str, Any] | None = None) -> d
 
 
 def _score_candidate(name: str, scene: str, cues: dict[str, float]) -> tuple[float, str]:
-    """Higher score wins. Reasons are short tags for manifests / agent Read."""
+    """Higher score wins. Pure cue fit — no pool-order bias (caller may tie-break)."""
     n = name.lower()
     score = 0.0
     reasons: list[str] = []
 
-    # Pool order baseline: earlier candidates get a tiny prior (skill: safe first)
-    # applied by caller via index; here only cue fit.
-
     if scene == "landscape":
         if cues["colorfulness"] > 0.28 or cues["mean_sat"] > 0.20:
-            if any(k in n for k in ("velvia", "vv2", "vv", "vivid", "landscape")):
+            if "velvia" in n:
+                score += 3.5
+                reasons.append("velvia_punch")
+            elif any(k in n for k in ("vv2", "vivid", "landscape")):
                 score += 3.0
                 reasons.append("high_colorfulness")
+            elif "vv" in n:
+                score += 2.6
+                reasons.append("high_colorfulness")
         if cues["mean_sat"] < 0.14 or cues["contrast"] < 0.18:
-            if any(k in n for k in ("classic-chrome", "fl", "chrome", "flat")):
+            if "classic-chrome" in n or "chrome" in n:
+                score += 3.2
+                reasons.append("muted_documentary")
+            elif any(k in n for k in ("fl", "flat")) and "fl2" not in n:
                 score += 2.5
                 reasons.append("muted_documentary")
         if cues["blue_bias"] > 0.05 or cues["green_bias"] > 0.04:
-            if any(k in n for k in ("velvia", "landscape", "vv", "fl")):
+            if "velvia" in n or "nikon-landscape" in n:
+                score += 2.0
+                reasons.append("sky_green_bias")
+            elif any(k in n for k in ("landscape", "vv", "fl")):
                 score += 1.5
                 reasons.append("sky_green_bias")
 
     elif scene == "portrait":
         if cues["skin_frac"] > 0.15:
-            if any(k in n for k in ("pt", "astia", "portrait")) and "rich" not in n:
+            if "astia" in n:
+                score += 3.0
+                reasons.append("skin_protect")
+            elif ("pt" in n or "portrait" in n) and "rich" not in n:
                 score += 2.5
                 reasons.append("skin_protect")
         if cues["hi_clip"] > 1.5 or cues["mean_l"] > 0.55:
-            if any(k in n for k in ("rich-tone", "astia", "sh", "pt")):
+            if "rich-tone" in n or "astia" in n:
+                score += 2.4
+                reasons.append("highlight_protect")
+            elif any(k in n for k in ("sh", "pt")):
                 score += 2.0
                 reasons.append("highlight_protect")
         if cues["warm_bias"] > 0.04 and cues["mean_l"] > 0.45:
-            if any(k in n for k in ("nostalgic", "rich-tone", "warm")):
+            if "nostalgic" in n or "rich-tone" in n:
+                score += 2.0
+                reasons.append("warm_skin")
+            elif "warm" in n:
                 score += 1.5
                 reasons.append("warm_skin")
 
     elif scene == "vivid":
-        if any(k in n for k in ("velvia", "vv2", "vv", "vivid", "landscape")):
+        if "velvia" in n:
+            score += 3.5
+            reasons.append("vivid_punch")
+        elif any(k in n for k in ("vv2", "vivid")):
             score += 3.0
             reasons.append("vivid_punch")
+        elif "vv" in n or "landscape" in n:
+            score += 2.5
+            reasons.append("vivid_punch")
         if cues["warm_bias"] > 0.05 and "classic-neg" in n:
-            score += 1.5
+            score += 1.8
             reasons.append("warm_urban")
 
     elif scene == "matte":
-        if any(k in n for k in ("in", "classic-chrome", "flat", "eterna", "fl2", "editorial")):
+        if "classic-chrome" in n or n.endswith("-in") or "sony-in" in n:
+            score += 3.2
+            reasons.append("matte_fade")
+        elif any(k in n for k in ("flat", "eterna", "fl2", "editorial")):
             score += 3.0
             reasons.append("matte_fade")
 
     elif scene == "highkey":
-        if any(k in n for k in ("sh", "astia", "rich-tone", "provia")):
+        if "astia" in n or "rich-tone" in n:
+            score += 3.0
+            reasons.append("highkey_soft")
+        elif any(k in n for k in ("sh", "provia")):
             score += 2.5
             reasons.append("highkey_soft")
 
     elif scene == "night":
-        if n == "night" or any(k in n for k in ("eterna", "flat", "fl", "nt", "neutral")):
+        if n == "night" or "eterna" in n:
+            score += 3.0
+            reasons.append("night_safe")
+        elif any(k in n for k in ("flat", "fl", "nt", "neutral")):
             score += 2.5
             reasons.append("night_safe")
 
     elif scene == "neutral_grade":
-        if any(k in n for k in ("nt", "neutral", "flat", "eterna", "provia", "editorial")):
+        if any(k in n for k in ("nt", "neutral", "eterna", "editorial")):
+            score += 2.8
+            reasons.append("grade_later")
+        elif any(k in n for k in ("flat", "provia")):
             score += 2.5
             reasons.append("grade_later")
 
     else:  # general
-        if any(k in n for k in ("st", "provia", "standard", "natural")):
+        if any(k in n for k in ("provia", "standard", "natural")):
+            score += 2.2
+            reasons.append("safe_standard")
+        elif "-st" in n or n.endswith("st"):
             score += 2.0
             reasons.append("safe_standard")
-        if cues["colorfulness"] > 0.25 and any(k in n for k in ("fl", "chrome", "astia")):
-            score += 1.0
-            reasons.append("mild_character")
+        if cues["colorfulness"] > 0.25:
+            if "classic-chrome" in n or "astia" in n:
+                score += 1.4
+                reasons.append("mild_character")
+            elif any(k in n for k in ("fl", "chrome")):
+                score += 1.0
+                reasons.append("mild_character")
 
-    return score, "+".join(reasons) if reasons else "pool_default"
+    return score, "+".join(reasons) if reasons else "cue_tie"
 
 
 def pick_from_pool(
@@ -181,27 +224,37 @@ def pick_from_pool(
     scene: str,
     cues: dict[str, float],
 ) -> tuple[str, list[str], str]:
-    """Deterministic pick inside an ordered pool. Returns (look, candidates, reason)."""
+    """Pick by secondary cue heuristics; pool order is only a deterministic tie-break.
+
+    Returns (look, candidates[≤3 with winner first], reason).
+    """
     cleaned = [x for x in pool if x in ALL_LOOKS]
     if not cleaned:
         cleaned = ["natural"] if "natural" in ALL_LOOKS else list(ALL_LOOKS.keys())[:1]
-    # Keep at most 3 for compare sheets (skill: 2–3 alternates, not full scan)
-    candidates = cleaned[:3]
-
-    best_name = candidates[0]
-    best_score = -1e9
-    best_reason = "pool_default"
-    for idx, name in enumerate(candidates):
+    # Score the whole pool; keep top-3 for compare sheets
+    scored: list[tuple[float, int, str, str]] = []
+    for idx, name in enumerate(cleaned):
         cue_score, reason = _score_candidate(name, scene, cues)
-        # Earlier pool entries get slight prior (safe-first)
-        score = cue_score + (len(candidates) - idx) * 0.15
-        if score > best_score:
-            best_score = score
-            best_name = name
-            best_reason = reason
+        # Tiny index epsilon only breaks exact ties (stable, not a Sony bias)
+        scored.append((cue_score, -idx, name, reason))
 
-    # Put winner first in candidates list for compare UX
-    ordered = [best_name] + [c for c in candidates if c != best_name]
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    best_name = scored[0][2]
+    best_reason = scored[0][3]
+    if scored[0][0] <= 0:
+        best_reason = "cue_tie"
+
+    # Top 3 by heuristic score for compare UX (winner first)
+    top = []
+    seen = set()
+    for _sc, _i, name, _r in scored:
+        if name in seen:
+            continue
+        top.append(name)
+        seen.add(name)
+        if len(top) >= 3:
+            break
+    ordered = [best_name] + [c for c in top if c != best_name]
     return best_name, ordered, best_reason
 
 
@@ -231,12 +284,27 @@ def suggest_look_detail(
     locked_look: str | None = None,
     sticky: bool | None = None,
 ) -> LookSuggestion:
-    """Full suggestion with candidates + reason. Honors sticky lock when set."""
+    """Full suggestion with candidates + reason. Honors sticky lock when set.
+
+    Brand priority: explicit `brand` → details['look_brand'] (EXIF) → prefs → sony.
+    """
     prefs = load_prefs()
-    brand_key = (brand or prefs.get("brand") or "sony").lower()
+    details = details or {}
+    brand_key = (
+        brand
+        or details.get("look_brand")
+        or details.get("grade_brand")
+        or prefs.get("brand")
+        or "sony"
+    )
+    brand_key = str(brand_key).lower()
+    if brand_key in {"auto", ""}:
+        brand_key = str(details.get("look_brand") or prefs.get("brand") or "sony").lower()
     if brand_key not in BRAND_SCENE_POOLS:
         brand_key = "sony"
     use_sticky = prefs.get("sticky_look", True) if sticky is None else sticky
+    # EXIF/explicit brand should use that brand's pools, not stale prefs pools
+    brand_override = brand is not None or bool(details.get("look_brand") or details.get("grade_brand"))
 
     if forced and forced != "auto":
         return LookSuggestion(
@@ -263,7 +331,7 @@ def suggest_look_detail(
     # One shoot, one grade: sticky lock wins after first auto pick
     if use_sticky and locked_look and locked_look in ALL_LOOKS:
         tag = classify_scene(np_rgb, details)
-        pool = resolve_pool(brand_key, tag, prefs, brand_override=(brand is not None))
+        pool = resolve_pool(brand_key, tag, prefs, brand_override=brand_override)
         return LookSuggestion(
             look=locked_look,
             scene_tag=tag,
@@ -275,7 +343,7 @@ def suggest_look_detail(
 
     tag = classify_scene(np_rgb, details)
     cues = extract_cues(np_rgb, details)
-    pool = resolve_pool(brand_key, tag, prefs, brand_override=(brand is not None))
+    pool = resolve_pool(brand_key, tag, prefs, brand_override=brand_override)
     look, candidates, reason = pick_from_pool(pool, tag, cues)
     return LookSuggestion(
         look=look,

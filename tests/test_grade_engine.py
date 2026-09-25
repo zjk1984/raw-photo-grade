@@ -61,6 +61,64 @@ def test_brand_auto_suggest():
     assert look_n.startswith("nikon-") or look_n == "night"
 
 
+def test_sony_pool_includes_fuji_nikon():
+    from looks import scene_pools_for_brand
+
+    pools = scene_pools_for_brand("sony")
+    portrait = pools["portrait"]
+    assert portrait[0].startswith("sony-")
+    assert any(x.startswith("fuji-") for x in portrait)
+    assert any(x.startswith("nikon-") for x in portrait)
+    landscape = pools["landscape"]
+    assert any(x.startswith("fuji-") for x in landscape)
+    assert any(x.startswith("nikon-") for x in landscape)
+
+
+def test_sony_heuristics_prefer_velvia_on_vivid():
+    from look_select import pick_from_pool
+    from looks import scene_pools_for_brand
+
+    pool = scene_pools_for_brand("sony")["vivid"]
+    cues = {
+        "mean_l": 0.45,
+        "contrast": 0.25,
+        "mean_sat": 0.30,
+        "colorfulness": 0.35,
+        "blue_bias": 0.06,
+        "green_bias": 0.05,
+        "warm_bias": 0.0,
+        "skin_frac": 0.0,
+        "subj_y": 0.5,
+        "hi_clip": 0.0,
+    }
+    look, candidates, reason = pick_from_pool(pool, "vivid", cues)
+    assert look == "fuji-velvia"
+    assert "fuji-velvia" in candidates
+    assert "vivid" in reason or "velvia" in reason
+
+
+def test_sony_heuristics_prefer_chrome_when_muted():
+    from look_select import pick_from_pool
+    from looks import scene_pools_for_brand
+
+    pool = scene_pools_for_brand("sony")["landscape"]
+    cues = {
+        "mean_l": 0.4,
+        "contrast": 0.12,
+        "mean_sat": 0.10,
+        "colorfulness": 0.12,
+        "blue_bias": 0.02,
+        "green_bias": 0.01,
+        "warm_bias": 0.0,
+        "skin_frac": 0.0,
+        "subj_y": 0.5,
+        "hi_clip": 0.0,
+    }
+    look, _cands, reason = pick_from_pool(pool, "landscape", cues)
+    assert look == "fuji-classic-chrome"
+    assert "muted" in reason or "documentary" in reason
+
+
 def test_pool_pick_and_sticky():
     from look_select import suggest_look_detail
 
