@@ -113,15 +113,33 @@ def main() -> int:
     print(f"==> Step 1: Evaluating photos using M4/Metal GPU (device: {args.device})...", file=sys.stderr)
     evaluator = PhotoEvaluator(device_name=args.device)
 
-    # Collect files
+    # Collect files (top-level only for dirs; skip curated/edited output folders; dedupe symlinks)
     from eval_photo import ALL_SUPPORTED_SUFFIXES
+    skip_dirs = {"curated", "edited", "selected", "PhotoGrade_Export", "PhotoGrade_Curated"}
     files = []
+    seen = set()
     for inp in args.inputs:
         p = Path(inp).expanduser()
         if p.is_dir():
-            files.extend(sorted(f for f in p.rglob("*") if f.suffix in ALL_SUPPORTED_SUFFIXES and not f.name.startswith(".")))
+            candidates = sorted(
+                f for f in p.iterdir()
+                if f.is_file()
+                and f.suffix in ALL_SUPPORTED_SUFFIXES
+                and not f.name.startswith(".")
+            )
         elif p.is_file() and p.suffix in ALL_SUPPORTED_SUFFIXES:
-            files.append(p)
+            candidates = [p]
+        else:
+            candidates = []
+        for f in candidates:
+            key = f.resolve()
+            if key in seen:
+                continue
+            # Skip files that live under known output dirs when user passes a nested path
+            if any(part in skip_dirs for part in f.parts):
+                continue
+            seen.add(key)
+            files.append(f)
 
     if not files:
         sys.stderr.write("No supported photos found.\n")
