@@ -179,6 +179,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 device_name="auto",
                 weights=PRESET_WEIGHTS.get(preset),
             )
+            evaluator.preset = preset
             SESSION_DATA["evaluator"] = evaluator
 
             temp_dir = Path(tempfile.gettempdir()) / "photograde_m4_session"
@@ -186,6 +187,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
 
             results = []
             SESSION_DATA["temp_files"].clear()
+            evals = []
 
             for idx, (filename, raw_bytes) in enumerate(uploaded_files):
                 temp_file = temp_dir / filename
@@ -200,23 +202,33 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                         im.thumbnail((480, 480))
                         im.convert("RGB").save(thumb_file, "JPEG", quality=85)
                     SESSION_DATA["temp_files"][idx] = str(thumb_file)
-
-                    res_dict = {
-                        "path": str(temp_file),
-                        "filename": filename,
-                        "overall_score": ev.overall_score,
-                        "tier": ev.tier,
-                        "sharpness": ev.sharpness,
-                        "dynamic_range": ev.dynamic_range,
-                        "noise_control": ev.noise_control,
-                        "color_harmony": ev.color_harmony,
-                        "composition": ev.composition,
-                        "flags": ev.flags,
-                        "details": ev.details,
-                    }
-                    results.append(res_dict)
+                    evals.append((idx, filename, str(temp_file), ev))
                 except Exception as e:
                     print(f"Error evaluating {filename}: {e}", file=sys.stderr)
+
+            from batch_rank import apply_batch_relative_ranking, build_verdict_reason
+
+            path_meta = {id(e): (idx, filename, path_str) for idx, filename, path_str, e in evals}
+            ranked = apply_batch_relative_ranking([e for _, _, _, e in evals])
+            for ev in ranked:
+                idx, filename, path_str = path_meta[id(ev)]
+                try:
+                    ev.details["verdict_reason"] = build_verdict_reason(ev)
+                except Exception:
+                    pass
+                results.append({
+                    "path": path_str,
+                    "filename": filename,
+                    "overall_score": ev.overall_score,
+                    "tier": ev.tier,
+                    "sharpness": ev.sharpness,
+                    "dynamic_range": ev.dynamic_range,
+                    "noise_control": ev.noise_control,
+                    "color_harmony": ev.color_harmony,
+                    "composition": ev.composition,
+                    "flags": ev.flags,
+                    "details": ev.details,
+                })
 
             SESSION_DATA["evaluations"] = results
             self.send_json({"results": results})
@@ -257,8 +269,10 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                     else:
                         with Image.open(src) as im:
                             rgb = np.asarray(im.convert("RGB"), dtype=np.float32) / 255.0
-                    if preview or look_compare:
+                    rgb_full = rgb
+                    if preview:
                         rgb = resize_long_edge(rgb, 1600)
+                    rgb_compare = resize_long_edge(rgb_full, 1600) if look_compare else rgb
 
                     details = dict(item.get("details") or {})
                     try:
@@ -282,7 +296,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                         else None
                     )
                     suggestion = suggest_look_detail(
-                        rgb,
+                        rgb_compare if look_compare and not preview else rgb,
                         details,
                         forced=None if look_mode == "auto" else look_mode,
                         auto=(look_mode == "auto"),
@@ -311,7 +325,7 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                             if cand not in ALL_LOOKS:
                                 continue
                             alt_params, _ = look_params_for_camera(cand, path=src)
-                            alt = apply_grade(rgb, alt_params)
+                            alt = apply_grade(rgb_compare, alt_params)
                             tag = "PRIMARY" if cand == look_name else "ALT"
                             panels.append((f"{tag}: {cand}", alt))
                         if panels:
@@ -446,12 +460,14 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                 device_name="auto",
                 weights=PRESET_WEIGHTS.get(preset),
             )
+            evaluator.preset = preset
             SESSION_DATA["evaluator"] = evaluator
 
             temp_dir = Path(tempfile.gettempdir()) / "photograde_m4_session"
             temp_dir.mkdir(parents=True, exist_ok=True)
             results = []
             SESSION_DATA["temp_files"].clear()
+            evals = []
 
             for idx, src in enumerate(files):
                 thumb_file = temp_dir / f"thumb_{idx}.jpg"
@@ -470,22 +486,34 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                         except Exception:
                             Image.new("RGB", (160, 120), (40, 40, 48)).save(thumb_file, "JPEG")
                     SESSION_DATA["temp_files"][idx] = str(thumb_file)
-                    # Keep real path for develop/organize (not a temp upload copy)
-                    results.append({
-                        "path": str(src.resolve()),
-                        "filename": src.name,
-                        "overall_score": ev.overall_score,
-                        "tier": ev.tier,
-                        "sharpness": ev.sharpness,
-                        "dynamic_range": ev.dynamic_range,
-                        "noise_control": ev.noise_control,
-                        "color_harmony": ev.color_harmony,
-                        "composition": ev.composition,
-                        "flags": ev.flags,
-                        "details": ev.details,
-                    })
+                    evals.append((idx, src, ev))
                 except Exception as e:
                     print(f"Error evaluating {src.name}: {e}", file=sys.stderr)
+
+            from batch_rank import apply_batch_relative_ranking, build_verdict_reason
+
+            path_meta = {id(e): (idx, src) for idx, src, e in evals}
+            ranked = apply_batch_relative_ranking([e for _, _, e in evals])
+            for ev in ranked:
+                idx, src = path_meta[id(ev)]
+                try:
+                    ev.details["verdict_reason"] = build_verdict_reason(ev)
+                except Exception:
+                    pass
+                # Keep real path for develop/organize (not a temp upload copy)
+                results.append({
+                    "path": str(src.resolve()),
+                    "filename": src.name,
+                    "overall_score": ev.overall_score,
+                    "tier": ev.tier,
+                    "sharpness": ev.sharpness,
+                    "dynamic_range": ev.dynamic_range,
+                    "noise_control": ev.noise_control,
+                    "color_harmony": ev.color_harmony,
+                    "composition": ev.composition,
+                    "flags": ev.flags,
+                    "details": ev.details,
+                })
 
             SESSION_DATA["evaluations"] = results
             self.send_json({

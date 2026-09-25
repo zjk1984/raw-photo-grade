@@ -777,6 +777,7 @@
       </div>
 
       <div id="drawerFlags" class="flags-tag-list"></div>
+      <p id="drawerVerdict" style="margin: 8px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-muted);"></p>
 
       <div class="panel-title" style="margin-top: 6px;">各项量化指标分解</div>
 
@@ -790,10 +791,18 @@
 
       <div class="metric-row">
         <div class="metric-header">
-          <span>曝光动态范围 / 宽容度</span>
+          <span>RAW 后期空间 / 宽容度</span>
           <strong id="valDR">88.0</strong>
         </div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="barDR" style="width: 88%;"></div></div>
+      </div>
+
+      <div class="metric-row">
+        <div class="metric-header">
+          <span>直出观感（可后期调整）</span>
+          <strong id="valAsShot">-</strong>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="barAsShot" style="width: 0%;"></div></div>
       </div>
 
       <div class="metric-row">
@@ -984,9 +993,9 @@
             <div class="card-filename" title="${p.filename}">${p.filename}</div>
             <div class="mini-metrics">
               <div class="metric-pill"><span>锐度</span><span>${p.sharpness}</span></div>
-              <div class="metric-pill"><span>宽容度</span><span>${p.dynamic_range}</span></div>
+              <div class="metric-pill"><span>后期空间</span><span>${(p.details && p.details.edit_latitude != null) ? p.details.edit_latitude : p.dynamic_range}</span></div>
+              <div class="metric-pill"><span>直出</span><span>${(p.details && p.details.as_shot_score != null) ? p.details.as_shot_score : '-'}</span></div>
               <div class="metric-pill"><span>噪点</span><span>${p.noise_control}</span></div>
-              <div class="metric-pill"><span>色彩</span><span>${p.color_harmony}</span></div>
             </div>
             ${p.flags && p.flags.length ? `
               <div class="flags-tag-list">
@@ -1000,9 +1009,21 @@
 
     function translateFlag(flag) {
       const map = {
-        'blurry': '失焦微晃',
+        'blurry': '失焦（硬否决）',
+        'soft': '焦平面偏软',
+        'batch_promoted': '卷内相对提升',
+        'shallow_dof': '浅景深（背景虚化）',
+        'motion_risk': '快门偏慢（手抖风险）',
+        'high_iso': '高感光度',
+        'exposure_mismatch': '曝光参数与画面亮度不符',
         'clipped_highlights': '高光死白',
-        'crushed_shadows': '暗部死黑',
+        'crushed_shadows': '暗部死黑（难恢复）',
+        'raw_highlight_clip': '传感器高光裁切',
+        'no_latitude': '后期空间不足',
+        'underexposed_as_shot': '直出欠曝（可拉）',
+        'overexposed_as_shot': '直出过曝（可压）',
+        'preview_highlights': '预览高光偏亮',
+        'preview_shadows': '预览暗部偏重',
         'underexposed': '欠曝严重',
         'overexposed': '过曝严重',
         'tilted_horizon': '地平线倾斜'
@@ -1030,10 +1051,19 @@
       // 旗标
       const flagsBox = document.getElementById('drawerFlags');
       flagsBox.innerHTML = (selectedPhoto.flags || []).map(f => `<span class="flag-tag">${translateFlag(f)}</span>`).join('');
+      const verdictEl = document.getElementById('drawerVerdict');
+      if (verdictEl) {
+        verdictEl.textContent = (selectedPhoto.details && selectedPhoto.details.verdict_reason) || '';
+      }
 
       // 进度条
       setMetric('valSharp', 'barSharp', selectedPhoto.sharpness);
-      setMetric('valDR', 'barDR', selectedPhoto.dynamic_range);
+      setMetric('valDR', 'barDR', (selectedPhoto.details && selectedPhoto.details.edit_latitude != null)
+        ? selectedPhoto.details.edit_latitude : selectedPhoto.dynamic_range);
+      const asShot = selectedPhoto.details && selectedPhoto.details.as_shot_score;
+      if (document.getElementById('valAsShot')) {
+        setMetric('valAsShot', 'barAsShot', asShot != null ? asShot : 0);
+      }
       setMetric('valNoise', 'barNoise', selectedPhoto.noise_control);
       setMetric('valColor', 'barColor', selectedPhoto.color_harmony);
       setMetric('valComp', 'barComp', selectedPhoto.composition);

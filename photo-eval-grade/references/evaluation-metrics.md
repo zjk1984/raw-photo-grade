@@ -6,32 +6,33 @@ Technical specifications of the multi-dimensional photo assessment algorithms us
 
 ## 1. Metrics Breakdown
 
-### 1.1 Sharpness & Subject Focus (`sharpness`)
-- **Core Concept**: Photographic sharpness is determined by the subject's in-focus micro-contrast and edge transitions, not by the entire image average (which would unfairly penalize shallow depth-of-field portraits or macro photography).
+### 1.1 Sharpness & Subject Focus (`sharpness` = \(S_{\text{plane}}\))
+- **Core Concept**: Photographic sharpness is determined by the **focal plane / in-focus subject** micro-contrast, not by the entire image (which would unfairly penalize shallow depth-of-field portraits or macro).
 - **Algorithm**:
-  1. Convert image to linear/sRGB luminance \( Y = 0.2126 R + 0.7152 G + 0.0722 B \).
-  2. Apply Sobel 3×3 convolution filters (\( G_x, G_y \)) on GPU/MPS:
-     \[
-     G_x = \begin{bmatrix} -1 & 0 & 1 \\ -2 & 0 & 2 \\ -1 & 0 & 1 \end{bmatrix}, \quad
-     G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ 1 & 2 & 1 \end{bmatrix}
-     \]
-  3. Calculate gradient magnitude: \( M(x, y) = \sqrt{G_x(x,y)^2 + G_y(x,y)^2} \).
-  4. Compute the **95th percentile** of edge magnitudes. This specifically isolates the sharpest in-focus areas while ignoring smooth out-of-focus background bokeh.
-- **Scoring**: Mapped to 0–100. Values below 28 trigger a `blurry` defect flag.
+  1. Convert to luminance \( Y = 0.2126 R + 0.7152 G + 0.0722 B \).
+  2. **Field metric** \(S_{\text{field}}\): **median** of 5×5 patch scores (bokeh-aware; not full-frame 95th).
+  3. **Plane metric** \(S_{\text{plane}}\) (drives score + focus veto):
+     - Score a **5×5 grid** of patches; prefer **attention ∩ top patches** (IoU ≥ 0.12), else max / top-2 when \(F \le 2.8\).
+     - Also score an **attention window** from composition subject center (portrait preset biases upward toward eyes).
+     - \(S_{\text{plane}}\) prefers subject-plane overlap over a sharp corner leaf.
+  4. RAW-aware: re-measure edge95 on a **16-bit linear demosaic crop of the winning patch** (not a blind center crop); blend with `raw_trust`.
+  5. Critical band (\(S_{\text{plane}}\) within ±8 of `blur_cut`): higher-res RAW focus crop (~2200px).
+- **Scoring / flags**:
+  - \(S_{\text{plane}} < \text{blur\_cut} - m\) → `blurry` (−22, ban S/A). Margin \(m=8\) camera / \(m=10\) phone.
+  - \(\text{blur\_cut} - m \le S_{\text{plane}} < \text{blur\_cut}\) → `soft` (−14, ban S/A, **B allowed**).
+  - \(\text{blur\_cut} \le S_{\text{plane}} < \text{soft\_cut}\) → `soft` (−10, no S/A ban).
+  - Large \(S_{\text{plane}} - S_{\text{field}}\) → `shallow_dof` (no hard veto).
+- **Phone / ProRAW**: lower `blur_sharp` defaults (26), OIS/multi-frame IBIS, missing F → assumed wide; computational latitude ceiling.
+- **Batch ranking**: after a shoot is scored, annotate `shoot_percentile` / `shoot_z`; top-quintile soft keepers with strong `edit_latitude` may promote C→B (`batch_promoted`). Phone lat floor 65 vs camera 70.
+- **Verdict**: `details.verdict_reason` — one-line Chinese diagnosis (focus + latitude + roll rank).
 
 ---
 
-### 1.2 Dynamic Range & Exposure Balance (`dynamic_range`)
-- **Core Concept**: A well-exposed photo retains detail across shadows, midtones, and highlights without unrecoverable clipping or flat muddy tones.
-- **Algorithm**:
-  1. **Histogram Shannon Entropy**:
-     \[
-     H(Y) = -\sum_{i=1}^{K} p_i \log_2(p_i)
-     \]
-     Higher entropy signifies a rich tonal distribution across the 64 luminance bins.
-  2. **Highlight Clipping Ratio**: Percentage of pixels where \( Y > 0.985 \). More than 8% clipped highlights triggers `clipped_highlights` penalty.
-  3. **Shadow Crushing Ratio**: Percentage of pixels where \( Y < 0.015 \). More than 20% crushed shadows triggers `crushed_shadows` penalty.
-  4. **Midtone Luminance Drift**: Measures distance between mean scene luminance and the perceptual mid-point (~0.42).
+### 1.2 Dynamic Range → Edit Latitude (`dynamic_range` ≈ \(S_{\text{lat}}\))
+- **Core Concept**: For RAW, score **recoverability** (headroom below white level, shadow floor, ISO-relative noise), not JPEG-like as-shot brightness.
+- **Track B (drives DR metric on RAW)**: `edit_latitude` from sensor levels + profile DR ceiling; preset×ISO tolerance.
+- **Track C (informational)**: `as_shot_score` from preview entropy/clipping — soft flags like `underexposed_as_shot` (light penalty, no S ban alone).
+- **Hard integrity**: `raw_highlight_clip` / `no_latitude` / dead `crushed_shadows` may block S.
 
 ---
 
@@ -85,11 +86,20 @@ The base score is computed via weighted sum of normalized indicators:
 ### Penalties & Hard Vetoes:
 | Condition | Penalty | Flag Added | Consequence |
 | :--- | :--- | :--- | :--- |
-| **Severe Blur / Focus Miss** (\(S_{\text{sharp}} < 28\)) | -22 pts | `blurry` | Automatically disqualified from S & A |
-| **Noticeable Softness** (\(S_{\text{sharp}} < 42\)) | -10 pts | - | Score reduced |
+| **Hard blur** (\(S_{\text{plane}} < \text{blur\_cut}' - 8\)) | -22 pts | `blurry` | Banned from S & A |
+| **Soft / critical band** (\(\text{blur\_cut}'-8 \le S < \text{blur\_cut}'\)) | -14 pts | `soft` | Banned from S & A; **B allowed** |
+| **Noticeable Softness** (\(S_{\text{plane}} < \text{soft\_cut}\)) | -10 pts | `soft` | Score reduced (no S/A ban if ≥ blur_cut) |
+| **Sensor highlight clip** | -12 pts | `raw_highlight_clip` | Blocks S |
+| **No edit latitude** | -10 pts | `no_latitude` | Blocks S |
+| **As-shot underexposed (recoverable)** | -3 pts | `underexposed_as_shot` | Informational / light |
+| **Shallow DOF** (large plane−field gap) | 0 pts | `shallow_dof` | Informational only |
+| **Motion risk** (shutter ≫ safe \(1/f_{35}\)) | 0 pts | `motion_risk` | Informational; may slightly lower `blur_cut'` |
+| **High ISO** (ISO ≫ body base) | 0 pts | `high_iso` | Informational; noise scored vs ISO expectation |
+| **Exposure mismatch** (scene EV vs midtones) | −6 pts | `exposure_mismatch` | Light penalty only |
 | **Clipped Highlights** (\(> 8\%\)) | -14 pts | `clipped_highlights` | Disqualified from S |
 | **Crushed Shadows** (\(> 20\%\)) | -8 pts | `crushed_shadows` | Score reduced |
 | **Tilted Horizon** (\(|\theta| \ge 4^\circ\)) | -6 pts | `tilted_horizon` | Score reduced |
+| **Batch promote** (top quintile + latitude) | score floor | `batch_promoted` | Soft C→B within shoot |
 | **Severe Underexposure** (\(\bar{Y} < 0.10\)) | -15 pts | `underexposed` | Disqualified from S |
 
 ---

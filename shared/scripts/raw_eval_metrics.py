@@ -28,8 +28,19 @@ def _exif_iso(exif: dict[str, Any] | None) -> float:
     return 0.0
 
 
-def extract_raw_context(path: Path, profile: SensorProfile, exif: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Decode RAW sensor stats + a linear 16-bit demosaic crop for focus."""
+def extract_raw_context(
+    path: Path,
+    profile: SensorProfile,
+    exif: dict[str, Any] | None = None,
+    *,
+    focus_patch: dict[str, float] | None = None,
+    high_res_focus: bool = False,
+) -> dict[str, Any]:
+    """Decode RAW sensor stats + a linear 16-bit demosaic crop for focus.
+
+    focus_patch: normalized {x0,y0,x1,y1} from RGB plane pick (P2).
+    high_res_focus: keep longer edge ~2200 on critical-band recheck.
+    """
     import rawpy
 
     exif = exif or {}
@@ -64,15 +75,29 @@ def extract_raw_context(path: Path, profile: SensorProfile, exif: dict[str, Any]
         rgb = rgb16.astype(np.float32) / 65535.0
 
     h, w = rgb.shape[:2]
-    # Attention-ish center crop (50%) — subject focus, ignore corners / bokeh rim
-    y0, y1 = h // 4, 3 * h // 4
-    x0, x1 = w // 4, 3 * w // 4
+    if focus_patch and all(k in focus_patch for k in ("x0", "y0", "x1", "y1")):
+        # Expand patch slightly for RAW micro-contrast stability
+        x0n = float(focus_patch["x0"])
+        y0n = float(focus_patch["y0"])
+        x1n = float(focus_patch["x1"])
+        y1n = float(focus_patch["y1"])
+        cx, cy = 0.5 * (x0n + x1n), 0.5 * (y0n + y1n)
+        bw, bh = max(0.12, x1n - x0n), max(0.12, y1n - y0n)
+        x0n, x1n = max(0.0, cx - bw * 0.65), min(1.0, cx + bw * 0.65)
+        y0n, y1n = max(0.0, cy - bh * 0.65), min(1.0, cy + bh * 0.65)
+        y0, y1 = int(y0n * h), max(int(y1n * h), int(y0n * h) + 1)
+        x0, x1 = int(x0n * w), max(int(x1n * w), int(x0n * w) + 1)
+    else:
+        # Fallback: center 50%
+        y0, y1 = h // 4, 3 * h // 4
+        x0, x1 = w // 4, 3 * w // 4
     crop = rgb[y0:y1, x0:x1]
-    # Downsample crop long edge to ~1600 for speed while keeping micro-contrast
+    # Downsample crop — higher res on critical-band recheck
+    target = 2200 if high_res_focus else 1600
     ch, cw = crop.shape[:2]
     m = max(ch, cw)
-    if m > 1600:
-        scale = 1600 / m
+    if m > target:
+        scale = target / m
         nh, nw = max(1, int(ch * scale)), max(1, int(cw * scale))
         from PIL import Image
 
@@ -109,6 +134,7 @@ def extract_raw_context(path: Path, profile: SensorProfile, exif: dict[str, Any]
         "raw_noise_mad": round(noise_mad, 5),
         "expected_noise": round(expected_noise(profile, iso), 5),
         "profile_id": profile.id,
+        "focus_patch": focus_patch,
         "crop_rgb": crop,  # for optional re-score; caller may drop before JSON
     }
 
@@ -118,40 +144,20 @@ def score_raw_sharpness(edge95: float, profile: SensorProfile) -> float:
     return float(np.clip((edge95 / ref) * 85.0, 0.0, 100.0))
 
 
-def score_raw_dynamic_range(ctx: dict[str, Any], profile: SensorProfile) -> tuple[float, list[str]]:
-    """Score exposure recoverability from sensor levels."""
-    flags: list[str] = []
-    headroom = float(ctx.get("headroom_ev", 0.0))
-    hi = float(ctx.get("raw_highlight_pct", 0.0))
-    sh = float(ctx.get("raw_shadow_pct", 0.0))
-    mid_ev = float(ctx.get("midtone_ev", 0.0))
+def score_raw_dynamic_range(
+    ctx: dict[str, Any],
+    profile: SensorProfile,
+    *,
+    preset: str = "general",
+    exposure_ctx: dict[str, Any] | None = None,
+) -> tuple[float, list[str]]:
+    """RAW edit latitude (recoverability). Prefer score_edit_latitude for new callers."""
+    from edit_latitude import score_edit_latitude
 
-    # Ideal: ~1–3 stops headroom below clip, midtones near 0 EV from mid-grey
-    hr_score = 100.0 - abs(headroom - 1.8) * 18.0
-    if profile.computational:
-        # Phone ProRAW already compressed; less headroom is normal
-        hr_score = 100.0 - abs(headroom - 0.8) * 22.0
-    hr_score = float(np.clip(hr_score, 20.0, 100.0))
-
-    hi_pen = float(np.clip(hi * 2.5, 0.0, 45.0))
-    sh_pen = float(np.clip(max(0.0, sh - 5.0) * 1.2, 0.0, 30.0))
-    mid_pen = float(np.clip(max(0.0, abs(mid_ev) - 1.2) * 12.0, 0.0, 25.0))
-
-    if hi > 2.5:
-        flags.append("raw_highlight_clip")
-    if hi > 8.0:
-        flags.append("clipped_highlights")
-    if sh > 25.0:
-        flags.append("crushed_shadows")
-    if mid_ev < -2.5:
-        flags.append("underexposed")
-    elif mid_ev > 2.5:
-        flags.append("overexposed")
-
-    score = float(np.clip(hr_score - hi_pen - sh_pen - mid_pen, 0.0, 100.0))
-    # Cap by sensor DR reputation (phone lower ceiling)
-    score = min(score, 55.0 + profile.base_dr_ev * 3.0)
-    return round(score, 1), flags
+    score, _details, flags = score_edit_latitude(
+        ctx, profile, preset=preset, exposure_ctx=exposure_ctx
+    )
+    return score, flags
 
 
 def score_raw_noise(ctx: dict[str, Any], profile: SensorProfile) -> float:
@@ -170,11 +176,15 @@ def merge_scores(
     raw_noise: float,
     profile: SensorProfile,
 ) -> dict[str, float]:
-    """Blend RGB preview scores with RAW-aware scores using profile.raw_trust."""
+    """Blend RGB preview with RAW-aware scores.
+
+    Dynamic range / latitude uses elevated trust (RAW headroom beats as-shot look).
+    """
     t = float(np.clip(profile.raw_trust, 0.0, 1.0))
+    t_dr = float(np.clip(max(t, 0.92), 0.0, 1.0))
     return {
         "sharpness": round((1 - t) * rgb_scores["sharpness"] + t * raw_sharp, 1),
-        "dynamic_range": round((1 - t) * rgb_scores["dynamic_range"] + t * raw_dr, 1),
+        "dynamic_range": round((1 - t_dr) * rgb_scores["dynamic_range"] + t_dr * raw_dr, 1),
         "noise_control": round((1 - t) * rgb_scores["noise_control"] + t * raw_noise, 1),
         "color_harmony": rgb_scores["color_harmony"],
         "composition": rgb_scores["composition"],

@@ -153,6 +153,7 @@ class PhotoEvaluator:
         self.use_half_raw = use_half_raw
         self.raw_aware = raw_aware
         self.sensor_profile_prefer = sensor_profile
+        self.preset = "general"
 
     def load_image(self, path: Path) -> tuple[np.ndarray, Any]:
         """Load an image (RAW or standard) and return normalized RGB np.ndarray [H,W,3] in 0..1,
@@ -209,66 +210,36 @@ class PhotoEvaluator:
 
         return np_rgb, tensor_img
 
-    def compute_sharpness(self, np_rgb: np.ndarray, tensor_img: Any) -> tuple[float, float]:
-        """Compute sharpness using Tenengrad gradient energy of luminance.
+    def compute_sharpness(
+        self,
+        np_rgb: np.ndarray,
+        tensor_img: Any = None,
+        *,
+        subject_center: list[float] | None = None,
+        fnumber: float | None = None,
+    ) -> tuple[float, float, dict[str, Any]]:
+        """Focal-plane sharpness (skill: subject focus, not full-frame average).
 
-        Returns (score 0-100, raw_metric).
-        Evaluates top 5% high frequency edge energy to detect in-focus subject edges.
+        Returns (S_plane 0-100, edge95_plane, focus_details).
         """
-        if tensor_img is not None and self.device is not None:
-            import torch
-            import torch.nn.functional as F
+        from focus_sharpness import compute_plane_field_sharpness
 
-            # Luminance Y = 0.2126 R + 0.7152 G + 0.0722 B
-            gray = (
-                0.2126 * tensor_img[:, 0:1]
-                + 0.7152 * tensor_img[:, 1:2]
-                + 0.0722 * tensor_img[:, 2:3]
-            )
-
-            # Sobel horizontal & vertical kernels
-            sobel_x = torch.tensor(
-                [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
-                device=self.device,
-                dtype=torch.float32,
-            ).view(1, 1, 3, 3)
-            sobel_y = torch.tensor(
-                [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
-                device=self.device,
-                dtype=torch.float32,
-            ).view(1, 1, 3, 3)
-
-            gx = F.conv2d(gray, sobel_x, padding=1)
-            gy = F.conv2d(gray, sobel_y, padding=1)
-            mag = torch.sqrt(gx**2 + gy**2 + 1e-6)
-
-            # 95th percentile captures sharpest edges (subject in focus)
-            # while avoiding bokeh/background blur dragging down the score
-            raw_val = float(torch.quantile(mag, 0.95).item())
-        else:
-            # NumPy fallback
-            gray = (
-                0.2126 * np_rgb[..., 0]
-                + 0.7152 * np_rgb[..., 1]
-                + 0.0722 * np_rgb[..., 2]
-            )
-            gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
-            gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
-            mag = np.sqrt(gx**2 + gy**2)
-            raw_val = float(np.quantile(mag, 0.95))
-
-        # Map to 0-100 scale: typical sharp photos have 95th percentile ~0.15 - 0.35+
-        score = float(np.clip((raw_val / 0.28) * 80.0, 0.0, 100.0))
-        return round(score, 1), round(raw_val, 4)
+        # tensor_img unused for plane path — grid/attention on numpy is fast enough
+        _ = tensor_img
+        focus = compute_plane_field_sharpness(
+            np_rgb,
+            subject_center=subject_center,
+            preset=self.preset,
+            fnumber=fnumber,
+        )
+        return focus["sharp_plane"], focus["edge95_plane"], focus
 
     def compute_dynamic_range(
         self, np_rgb: np.ndarray, tensor_img: Any
     ) -> tuple[float, dict[str, float], list[str]]:
-        """Evaluate exposure, highlight/shadow clipping, and histogram entropy.
+        """As-shot preview look (Track C) — soft flags only; RAW latitude overrides for RAW."""
+        from edit_latitude import score_as_shot_preview
 
-        Returns (score 0-100, details, flags).
-        """
-        flags = []
         if tensor_img is not None and self.device is not None:
             import torch
 
@@ -300,37 +271,7 @@ class PhotoEvaluator:
             mask = prob > 0
             entropy = float(-np.sum(prob[mask] * np.log2(prob[mask])))
 
-        # Defect flags
-        if clipped_hi > 0.08:
-            flags.append("clipped_highlights")
-        if clipped_sh > 0.20:
-            flags.append("crushed_shadows")
-        if mean_luma < 0.10:
-            flags.append("underexposed")
-        elif mean_luma > 0.85:
-            flags.append("overexposed")
-
-        # Score calculation:
-        # Ideal entropy is around 4.8 - 5.8 (rich tones throughout range)
-        entropy_score = np.clip((entropy / 5.4) * 85.0, 20.0, 95.0)
-
-        # Clipping penalties
-        hi_penalty = np.clip(clipped_hi * 150.0, 0.0, 40.0)
-        sh_penalty = np.clip(clipped_sh * 100.0, 0.0, 30.0)
-
-        # Exposure center deviation penalty (mid-grey around 0.18 - 0.45 in linear/gamma)
-        exp_dev = abs(mean_luma - 0.42)
-        exp_penalty = np.clip(max(0.0, exp_dev - 0.15) * 60.0, 0.0, 30.0)
-
-        dr_score = float(np.clip(entropy_score - hi_penalty - sh_penalty - exp_penalty + 10.0, 0.0, 100.0))
-
-        details = {
-            "entropy": round(entropy, 2),
-            "clipped_highlights_pct": round(clipped_hi * 100.0, 2),
-            "clipped_shadows_pct": round(clipped_sh * 100.0, 2),
-            "mean_luma": round(mean_luma, 3),
-        }
-        return round(dr_score, 1), details, flags
+        return score_as_shot_preview(entropy, clipped_hi, clipped_sh, mean_luma)
 
     def compute_noise_control(self, np_rgb: np.ndarray, tensor_img: Any) -> tuple[float, float]:
         """Estimate noise level via high-frequency Laplacian residual in smooth areas.
@@ -495,36 +436,93 @@ class PhotoEvaluator:
         path = Path(path)
         np_rgb, tensor_img = self.load_image(path)
 
-        # 1. Metric calculations (RGB / demosaic preview path)
-        sharpness, raw_sharp = self.compute_sharpness(np_rgb, tensor_img)
+        # Composition first — attention center feeds focal-plane window (P1)
+        comp_score, comp_details = self.compute_composition(np_rgb)
+        subject_center = comp_details.get("subject_center")
+
+        # EXIF + exposure triangle context (E0)
+        exif: dict[str, Any] = {}
+        exposure_ctx: dict[str, Any] = {}
+        fnumber = None
+        try:
+            from exposure_context import build_exposure_context
+            from focus_sharpness import parse_fnumber
+            from raw_inspect import exiftool_tags
+
+            if path.suffix in RAW_SUFFIXES or path.suffix.lower() in {".jpg", ".jpeg", ".tif", ".tiff"}:
+                exif = exiftool_tags(path)
+                fnumber = parse_fnumber(exif)
+                exposure_ctx = build_exposure_context(exif, preset=self.preset)
+                if exposure_ctx.get("fnumber") is not None:
+                    fnumber = exposure_ctx["fnumber"]
+        except Exception:
+            exif = {}
+            exposure_ctx = {}
+            fnumber = None
+
+        # Focal-plane sharpness (P0/P1) — S_plane is the skill sharpness metric
+        sharpness, raw_sharp, focus_details = self.compute_sharpness(
+            np_rgb,
+            tensor_img,
+            subject_center=subject_center,
+            fnumber=fnumber,
+        )
+        sharp_field = float(focus_details.get("sharp_field", sharpness))
+        focus_patch = focus_details.get("focus_patch")
+
         dr_score, dr_details, flags = self.compute_dynamic_range(np_rgb, tensor_img)
         noise_score, raw_noise = self.compute_noise_control(np_rgb, tensor_img)
         color_score, color_details = self.compute_color_harmony(np_rgb)
-        comp_score, comp_details = self.compute_composition(np_rgb)
 
         profile = None
         raw_ctx: dict[str, Any] = {}
         if self.raw_aware and path.suffix in RAW_SUFFIXES:
             try:
-                from raw_inspect import exiftool_tags
+                from exposure_context import (
+                    adjust_noise_for_preset,
+                    blur_cuts_for_exposure,
+                    build_exposure_context,
+                )
+                from edit_latitude import score_edit_latitude
                 from raw_eval_metrics import (
                     extract_raw_context,
                     merge_scores,
-                    score_raw_dynamic_range,
                     score_raw_noise,
                     score_raw_sharpness,
                 )
                 from sensor_profiles import camera_identity, detect_sensor_profile_with_reason
 
-                exif = exiftool_tags(path)
+                if not exif:
+                    from raw_inspect import exiftool_tags
+
+                    exif = exiftool_tags(path)
                 profile, match_reason = detect_sensor_profile_with_reason(
                     path, exif, prefer=self.sensor_profile_prefer
                 )
                 ident = camera_identity(exif)
-                raw_ctx = extract_raw_context(path, profile, exif)
+                exposure_ctx = build_exposure_context(exif, profile=profile, preset=self.preset)
+                fnumber = exposure_ctx.get("fnumber")
+
+                # Critical band (±8 around blur_cut) → higher-res RAW focus crop
+                base_blur = float(profile.blur_sharp)
+                blur_preview, _, _ = blur_cuts_for_exposure(
+                    base_blur, float(profile.soft_sharp), exposure_ctx, preset=self.preset
+                )
+                high_res = (blur_preview - 8.0) <= sharpness <= (blur_preview + 8.0)
+
+                raw_ctx = extract_raw_context(
+                    path,
+                    profile,
+                    exif,
+                    focus_patch=focus_patch,
+                    high_res_focus=high_res,
+                )
                 r_sharp = score_raw_sharpness(float(raw_ctx["raw_edge95"]), profile)
-                r_dr, raw_flags = score_raw_dynamic_range(raw_ctx, profile)
+                r_dr, lat_details, raw_flags = score_edit_latitude(
+                    raw_ctx, profile, preset=self.preset, exposure_ctx=exposure_ctx
+                )
                 r_noise = score_raw_noise(raw_ctx, profile)
+                r_noise = adjust_noise_for_preset(r_noise, exposure_ctx, preset=self.preset)
                 merged = merge_scores(
                     {
                         "sharpness": sharpness,
@@ -546,10 +544,12 @@ class PhotoEvaluator:
                         flags.append(f)
                 details_raw = {k: v for k, v in raw_ctx.items() if k != "crop_rgb"}
                 raw_ctx = details_raw
+                raw_ctx.update(lat_details)
                 raw_ctx["rgb_sharpness_preview"] = raw_sharp
                 raw_ctx["raw_sharpness_score"] = r_sharp
                 raw_ctx["raw_dr_score"] = r_dr
                 raw_ctx["raw_noise_score"] = r_noise
+                raw_ctx["high_res_focus"] = high_res
                 raw_ctx["camera_make"] = ident["make_raw"]
                 raw_ctx["camera_model"] = ident["model_raw"]
                 raw_ctx["profile_match"] = match_reason
@@ -563,8 +563,29 @@ class PhotoEvaluator:
                     pass
             except Exception as exc:
                 raw_ctx = {"raw_aware_error": str(exc)}
+        elif exposure_ctx:
+            try:
+                from exposure_context import adjust_noise_for_preset
 
-        # 2. Weighted overall score
+                noise_score = adjust_noise_for_preset(
+                    noise_score, exposure_ctx, preset=self.preset
+                )
+            except Exception:
+                pass
+
+        # Ensure exposure_ctx includes profile when RAW path set it
+        if exif and profile is not None:
+            try:
+                from exposure_context import build_exposure_context
+
+                exposure_ctx = build_exposure_context(
+                    exif, profile=profile, preset=self.preset
+                )
+                fnumber = exposure_ctx.get("fnumber") or fnumber
+            except Exception:
+                pass
+
+        # 2. Weighted overall score — sharpness is S_plane (possibly RAW-merged)
         w = self.weights
         overall = (
             sharpness * w["sharpness"]
@@ -574,40 +595,109 @@ class PhotoEvaluator:
             + comp_score * w["composition"]
         )
 
-        # 3. Rule-based vetoes — thresholds from sensor profile when available
-        blur_cut = float(profile.blur_sharp) if profile else 28.0
-        soft_cut = float(profile.soft_sharp) if profile else 42.0
-        if sharpness < blur_cut:
+        # 3. Rule-based vetoes — blur_cut' from exposure triangle (E1)
+        from exposure_context import (
+            blur_cuts_for_exposure,
+            exposure_info_flags,
+            exposure_mismatch_penalty,
+        )
+        from focus_sharpness import should_flag_shallow_dof
+
+        base_blur = float(profile.blur_sharp) if profile else 28.0
+        base_soft = float(profile.soft_sharp) if profile else 42.0
+        if not exposure_ctx:
+            exposure_ctx = {"fnumber": fnumber, "iso_ratio": 1.0, "preset": self.preset}
+        blur_cut, soft_cut, cut_deltas = blur_cuts_for_exposure(
+            base_blur, base_soft, exposure_ctx, preset=self.preset
+        )
+        # Soft vs hard blur: hard_cut = blur_cut − margin (phone: wider soft band)
+        family = str(
+            (exposure_ctx or {}).get("family")
+            or (getattr(profile, "family", None) if profile else None)
+            or "camera"
+        ).lower()
+        hard_margin = 10.0 if family == "phone" else 8.0
+        hard_cut = blur_cut - hard_margin
+        if sharpness < hard_cut:
             if "blurry" not in flags:
                 flags.append("blurry")
             overall -= 22.0
+        elif sharpness < blur_cut:
+            if "soft" not in flags:
+                flags.append("soft")
+            overall -= 14.0
         elif sharpness < soft_cut:
+            if "soft" not in flags:
+                flags.append("soft")
             overall -= 10.0
 
-        if "clipped_highlights" in flags or "raw_highlight_clip" in flags:
-            if "clipped_highlights" in flags:
-                overall -= 14.0
-            elif "raw_highlight_clip" in flags:
-                overall -= 8.0  # recoverable raw clip softer penalty
+        if "blurry" not in flags and should_flag_shallow_dof(
+            float(focus_details.get("sharp_plane", sharpness)),
+            sharp_field,
+            blur_cut=blur_cut,
+            soft_cut=soft_cut,
+            fnumber=fnumber,
+        ):
+            if "shallow_dof" not in flags:
+                flags.append("shallow_dof")
+
+        for info_f in exposure_info_flags(exposure_ctx):
+            if info_f not in flags:
+                flags.append(info_f)
+
+        # E2: EV vs RAW midtone mismatch
+        mid_ev = None
+        if raw_ctx.get("midtone_ev") is not None:
+            mid_ev = float(raw_ctx["midtone_ev"])
+        elif dr_details.get("mean_luma") is not None:
+            # Approximate mid placement from preview luma vs ~0.42
+            try:
+                mid_ev = math.log2(max(float(dr_details["mean_luma"]), 1e-4) / 0.42)
+            except (ValueError, ZeroDivisionError):
+                mid_ev = None
+        mismatch_pen, mismatch_flag = exposure_mismatch_penalty(mid_ev, exposure_ctx)
+        if mismatch_flag:
+            if mismatch_flag not in flags:
+                flags.append(mismatch_flag)
+            overall -= mismatch_pen
+
+        if "raw_highlight_clip" in flags:
+            overall -= 12.0  # true sensor clip — integrity track
+        if "no_latitude" in flags:
+            overall -= 10.0
         if "crushed_shadows" in flags:
             overall -= 8.0
+        # As-shot underexposure is recoverable on RAW — light info penalty only
+        if "underexposed_as_shot" in flags:
+            overall -= 3.0
+        if "overexposed_as_shot" in flags:
+            overall -= 3.0
+        if "preview_highlights" in flags:
+            overall -= 2.0
         if abs(comp_details.get("tilt_angle_deg", 0.0)) >= 4.0:
-            flags.append("tilted_horizon")
+            if "tilted_horizon" not in flags:
+                flags.append("tilted_horizon")
 
         overall = round(float(np.clip(overall, 0.0, 100.0)), 1)
 
-        # 4. Tier classification
+        # 4. Tier — Focus is King; soft bans S/A but allows B; hard blurry bans S/A
         hard_blur = "blurry" in flags
-        if overall >= 85.0 and not any(
-            f in flags for f in ["blurry", "clipped_highlights", "underexposed"]
-        ):
+        soft_focus = "soft" in flags and sharpness < blur_cut
+        hard_integrity = hard_blur or "raw_highlight_clip" in flags or "no_latitude" in flags
+        if overall >= 85.0 and not hard_integrity and not soft_focus:
             tier = "S"
-        elif overall >= 72.0 and not hard_blur:
+        elif overall >= 72.0 and not hard_blur and not soft_focus:
             tier = "A"
         elif overall >= 58.0:
             tier = "B"
         else:
             tier = "C"
+
+        # Ensure L0 fields always present
+        if "as_shot_score" not in dr_details and "as_shot_score" not in raw_ctx:
+            dr_details = {**dr_details, "as_shot_score": dr_score}
+        if profile and "edit_latitude" not in raw_ctx:
+            raw_ctx["edit_latitude"] = dr_score
 
         details = {
             "raw_sharpness": raw_sharp,
@@ -615,11 +705,33 @@ class PhotoEvaluator:
             **dr_details,
             **color_details,
             **comp_details,
+            "sharp_plane": sharpness,
+            "sharp_field": sharp_field,
+            "focus_patch": focus_patch,
+            "blur_cut": round(blur_cut, 2),
+            "hard_blur_cut": round(hard_cut, 2),
+            "hard_blur_margin": round(hard_margin, 1),
+            "blur_cut_base": base_blur,
+            "soft_cut": round(soft_cut, 2),
+            "blur_cut_deltas": cut_deltas,
+            "fnumber": exposure_ctx.get("fnumber", fnumber),
+            "exposure_time": exposure_ctx.get("exposure_time"),
+            "iso": exposure_ctx.get("iso"),
+            "shake_risk": exposure_ctx.get("shake_risk"),
+            "iso_ratio": exposure_ctx.get("iso_ratio"),
+            "scene_ev100": exposure_ctx.get("scene_ev100"),
+            "t_safe": exposure_ctx.get("t_safe"),
+            "focal_35mm": exposure_ctx.get("focal_35mm"),
+            "as_shot_score": dr_details.get("as_shot_score", dr_score),
+            "edit_latitude": raw_ctx.get("edit_latitude", dr_score),
             "compute_device": str(self.device) if self.device is not None else "cpu",
             "sensor_profile": profile.id if profile else None,
             "sensor_label": profile.label if profile else None,
+            "family": profile.family if profile else exposure_ctx.get("family"),
             "raw_aware": bool(profile),
+            "flags": list(flags),
             **raw_ctx,
+            **{k: v for k, v in focus_details.items() if k not in {"sharp_plane", "focus_patch"}},
         }
 
         try:
@@ -629,7 +741,7 @@ class PhotoEvaluator:
         except Exception:
             details["scene_tag"] = "general"
 
-        return ImageEvaluation(
+        result = ImageEvaluation(
             path=str(path.resolve()),
             filename=path.name,
             overall_score=overall,
@@ -642,6 +754,14 @@ class PhotoEvaluator:
             flags=flags,
             details=details,
         )
+        try:
+            from batch_rank import build_verdict_reason
+
+            details["verdict_reason"] = build_verdict_reason(result)
+        except Exception:
+            details["verdict_reason"] = ""
+        result.details = details
+        return result
 
 
 def format_table(results: list[ImageEvaluation]) -> str:
@@ -654,7 +774,7 @@ def format_table(results: list[ImageEvaluation]) -> str:
         "B": "\033[1;36m[ B ]\033[0m",  # Bold Cyan
         "C": "\033[1;31m[ C ]\033[0m",  # Bold Red
     }
-    header = f"{'Tier':<7} {'Score':<6} {'Sharp':<6} {'DynRng':<7} {'Noise':<6} {'Color':<6} {'Comp':<6} {'Flags':<22} {'Filename'}"
+    header = f"{'Tier':<7} {'Score':<6} {'Sharp':<6} {'Latit.':<7} {'Noise':<6} {'Color':<6} {'Comp':<6} {'Flags':<22} {'Filename'}"
     sep = "-" * len(header)
     lines.append(sep)
     lines.append(header)
@@ -727,6 +847,7 @@ def run_eval(
         raw_aware=raw_aware,
         sensor_profile=sensor_profile,
     )
+    evaluator.preset = preset
 
     # Collect files
     files: list[Path] = []
@@ -763,8 +884,15 @@ def run_eval(
     if not results:
         return 1
 
-    # Sort results by overall score descending
-    results.sort(key=lambda x: x.overall_score, reverse=True)
+    # Batch / shoot-relative ranking (top of roll soft keepers → B)
+    from batch_rank import apply_batch_relative_ranking, build_verdict_reason
+
+    results = apply_batch_relative_ranking(results)
+    for r in results:
+        try:
+            r.details["verdict_reason"] = build_verdict_reason(r)
+        except Exception:
+            pass
 
     # Optional filtering (e.g. S,A)
     if filter_tiers:
@@ -841,7 +969,7 @@ def main() -> int:
     parser.add_argument(
         "--sensor-profile",
         default=None,
-        choices=["sony_a7c_imx410", "iphone_17_promax", "auto"],
+        choices=["sony_a7c_imx410", "iphone_17_promax", "iphone_proraw", "auto"],
         help="Force sensor profile (default: auto-detect from EXIF)",
     )
     args = parser.parse_args()

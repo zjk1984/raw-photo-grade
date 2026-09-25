@@ -23,12 +23,13 @@ python3 "$SKILL_DIR/scripts/develop.py" photo.dng -o out.jpg --look natural --pr
 ## Hard rules
 
 1. Never overwrite the original DNG. Write JPEG/TIFF next to it or into an `edited/` folder.
-2. Always make a small preview first (`--preview` or `--long-edge 1600`) and **look at that image** with the Read tool before a final export.
+2. Always make a small preview first (`--preview` or `--long-edge 1600`) and **look at that image** with the Read tool before a final export. Final masters: omit `--preview` (full sensor resolution).
 3. Phone DNG is not a DSLR RAW. Small sensor, more noise, often some computational tone-mapping already in the file (especially iPhone ProRAW). Prefer modest moves.
 4. Use camera white balance as the starting point (`use_camera_wb`). Only shift temperature/tint after you have seen a preview.
-5. Lift shadows less than you would on a full-frame file. Noise lives in the shadows.
+5. Lift shadows less than you would on a full-frame file. Noise lives in the shadows. Prefer **edit latitude** over chasing as-shot brightness.
 6. After each meaningful change, regenerate the preview and look again. Iterate 2–4 rounds, then export full-res.
 7. If `rawpy` is missing, run `pip install -r "$SKILL_DIR/requirements.txt"` (needs libraw on the system). Do not invent a fake develop pipeline from JPEG.
+8. Soft focus (`soft`) can still be a B keeper; hard `blurry` stays out of S/A. Do not “fix” soft frames with `--sharpen 30`.
 
 ## Workflow
 
@@ -37,12 +38,27 @@ python3 "$SKILL_DIR/scripts/develop.py" photo.dng -o out.jpg --look natural --pr
 When working through a shoot of phone DNGs / ProRAW, evaluate and rank them first using M4 GPU acceleration:
 
 ```bash
-# iPhone 17 Pro / Pro Max ProRAW-aware scoring (default for this script)
+# iPhone ProRAW / DNG — EXIF auto profile (iphone_17_promax / iphone_proraw)
 python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --preset general
-python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --filter S,A --organize ./selected
+python3 "$SKILL_DIR/scripts/eval_dng.py" path/to/folder --filter S,A,B --organize ./selected
 ```
 
-See `photo-eval-grade/references/raw-sensor-eval.md`.
+Same engine as `photo-eval-grade` (phone-calibrated):
+
+1. **Focus is King** — \(S_{\text{plane}}\) vs `blur_cut'`: hard `blurry` (ban S/A) vs critical-band `soft` (ban S/A, **B ok**). Phone soft band is wider (−10 vs −8).
+2. **Edit latitude** — RAW recoverability drives DR; as-shot underexposure is informational only.
+3. **Batch ranking** — top-of-shoot soft keepers with latitude may `batch_promoted` C→B.
+4. **`verdict_reason`** — one-line Chinese diagnosis in JSON `details`.
+5. Attention ∩ top patches for plane pick (avoid sharp corner leaf on ultrawide).
+
+See `photo-eval-grade/references/raw-sensor-eval.md` and `evaluation-metrics.md`.
+
+Or run the unified pipeline (eval → filter → develop). **Omit `--preview` for full-res masters**; use `--preview` / `--look-compare` only for contact sheets:
+
+```bash
+python3 photo-eval-grade/scripts/pipeline.py path/to/folder \
+  --tiers S,A,B --look auto --brand apple --straighten --out-dir ./edited
+```
 
 ### 1. Inventory
 
@@ -145,4 +161,10 @@ Same look across a set from one shoot is correct. Do not invent a new grade per 
 python3 "$SKILL_DIR/scripts/develop.py" ./DCIM --out-dir ./edited --look natural --preview
 ```
 
-After previews exist, spot-check 3–5 frames (brightest, darkest, a face, a sky). Adjust the shared params, then `--full`.
+After previews exist, spot-check 3–5 frames (brightest, darkest, a face, a sky). Adjust the shared params, then full-res (no `--preview`):
+
+```bash
+python3 "$SKILL_DIR/scripts/develop.py" ./selected --out-dir ./edited --look natural --quality 95
+# or pipeline without --preview:
+python3 photo-eval-grade/scripts/pipeline.py ./DCIM --tiers S,A,B --look auto --brand apple --out-dir ./edited
+```

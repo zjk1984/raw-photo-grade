@@ -7,8 +7,9 @@
 - Computational RAW: demosaic + a local tone operator may already be in the file.
 - Highlights can look recoverable on the phone preview and still collapse if you add exposure first. Pull `--highlights` before `--exposure`.
 - Portrait mode is not ProRAW. If the user thinks a Portrait photo is RAW, inspect — it is usually HEIC.
-- 48 MP files are slow. Always `--preview` first.
+- 48 MP files are slow. Always `--preview` first; final export without `--preview` for full-res.
 - Skin: keep `--clarity` ≤ 6 and `--saturation` ≤ 0 unless the shot is not a person.
+- **Eval (shared with photo-eval-grade)**: profile `iphone_17_promax` / `iphone_proraw`; soft vs blurry critical band (phone margin −10); edit latitude vs as-shot; batch `batch_promoted`; `verdict_reason` in JSON.
 
 ### Google Pixel DNG
 
@@ -24,9 +25,10 @@
 ## Shared phone limits
 
 - Tiny pixels. Shadow lift of +30 looks clean at 200 px and dirty at 100%. Judge NR on the preview at 100% crop if the user cares about print.
-- Rolling shutter and focus errors are not fixable here. If the frame is soft, do not add `--sharpen 30`.
+- Rolling shutter and focus errors are not fixable here. If the frame is `soft` / `blurry`, do not add `--sharpen 30`. Soft keepers may still be B after batch ranking when latitude is good.
 - Ultrawide edges stretch faces. Prefer a tighter `--aspect` over "fixing" geometry.
 - Do not apply DSLR landscape recipes (clarity 40, dehaze 30, sat 20). They read as HDR from 2016 on a phone file.
+- Missing F-number in EXIF is normal — exposure calibration assumes ~wide phone aperture + OIS/multi-frame relief on `blur_cut'`.
 
 ## Color order that actually works
 

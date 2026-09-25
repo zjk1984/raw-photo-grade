@@ -106,7 +106,7 @@ def main() -> int:
         help="Directory to save developed photos (default: <photo_root>/edited)",
     )
     parser.add_argument("--straighten", action="store_true", help="Auto-level horizon")
-    parser.add_argument("--preview", action="store_true", help="Output 1600px preview instead of full-res")
+    parser.add_argument("--preview", action="store_true", help="Primary export long-edge 1600px (default: full-res)")
     parser.add_argument("--quality", type=int, default=92, help="JPEG export quality (default: 92)")
     args = parser.parse_args()
 
@@ -144,6 +144,7 @@ def main() -> int:
 
     print(f"==> Step 1: Evaluating photos using M4/Metal GPU (device: {args.device})...", file=sys.stderr)
     evaluator = PhotoEvaluator(device_name=args.device)
+    evaluator.preset = args.preset
 
     from eval_photo import ALL_SUPPORTED_SUFFIXES
     skip_dirs = {"curated", "edited", "selected", "PhotoGrade_Export", "PhotoGrade_Curated"}
@@ -183,7 +184,14 @@ def main() -> int:
         except Exception as e:
             sys.stderr.write(f"Error evaluating {f.name}: {e}\n")
 
-    evals.sort(key=lambda x: x.overall_score, reverse=True)
+    from batch_rank import apply_batch_relative_ranking, build_verdict_reason
+
+    evals = apply_batch_relative_ranking(evals)
+    for ev in evals:
+        try:
+            ev.details["verdict_reason"] = build_verdict_reason(ev)
+        except Exception:
+            pass
     print(format_table(evals), file=sys.stderr)
 
     target_tiers = {t.strip().upper() for t in args.tiers.split(",")}
@@ -211,8 +219,12 @@ def main() -> int:
         print(f"Developing {src.name} [{ev.tier} | {ev.overall_score:.1f}pts] -> {dest_name}", file=sys.stderr)
 
         rgb = _load_rgb(src)
-        if args.preview or args.look_compare:
+        # Full-res by default; --preview only shrinks the primary export.
+        # look_compare uses a separate downscaled copy so contact sheets stay cheap.
+        rgb_full = rgb
+        if args.preview:
             rgb = resize_long_edge(rgb, 1600)
+        rgb_compare = resize_long_edge(rgb_full, 1600) if args.look_compare else rgb
 
         exif_brand, details = _grade_context(src, ev.details)
         brand_for_file = force_brand or exif_brand
@@ -230,7 +242,7 @@ def main() -> int:
         )
 
         suggestion = suggest_look_detail(
-            rgb,
+            rgb_compare if args.look_compare and not args.preview else rgb,
             details,
             forced=None if args.look == "auto" else args.look,
             auto=(args.look == "auto"),
@@ -266,7 +278,7 @@ def main() -> int:
                 if cand not in ALL_LOOKS:
                     continue
                 alt_params, _ = look_params_for_camera(cand, path=src)
-                alt = apply_grade(rgb, alt_params)
+                alt = apply_grade(rgb_compare, alt_params)
                 tag = "PRIMARY" if cand == look_name else "ALT"
                 label = f"{tag}: {cand}"
                 alt_path = compare_dir / f"{src.stem}__{cand}.jpg"

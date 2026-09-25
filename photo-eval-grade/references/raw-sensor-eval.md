@@ -14,10 +14,12 @@
 
 ## Extra signals (vs plain JPEG eval)
 
-1. **Highlight headroom** from mosaic levels vs `black_level` / `white_level` (stops below clip).
-2. **Focus** on a **16-bit linear demosaic center crop** (not half-size 8-bit preview).
-3. **Noise** vs profile-expected MAD at the file’s ISO (FF vs phone curves differ).
-4. Profile-specific **blur soft/hard cutoffs** before S/A veto.
+1. **Highlight headroom** from mosaic levels vs `black_level` / `white_level` (stops below clip) — drives **edit_latitude**.
+2. **Focus** on a **16-bit linear demosaic crop of the winning focal-plane patch**.
+3. **Noise** vs profile-expected MAD at the file’s ISO.
+4. **Edit latitude** blends headroom + shadow floor + placement + ISO; as-shot preview is `as_shot_score` only (soft).
+5. Profile + EXIF F/Tv/ISO calibrate `blur_cut'`; `blurry` (hard) vs `soft` (critical band) + `raw_highlight_clip` / `no_latitude` gate S/A. Soft keepers may still land in B; batch ranking can promote top-of-shoot soft frames.
+6. **Phone / ProRAW**: family=`phone` → wider soft band (−10), OIS/multi-frame IBIS (~2 stops), missing F assumed wide; computational latitude ceiling; apple look pools + body adapter at develop.
 
 ## How the camera is chosen
 

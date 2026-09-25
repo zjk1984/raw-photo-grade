@@ -102,15 +102,26 @@ def test_sharpness_discrimination(sample_images):
 
 
 def test_dynamic_range_and_clipping(sample_images):
-    """Verify blown highlight detection and underexposure penalties."""
+    """Verify blown highlight / underexposure as-shot soft flags (Track C)."""
     evaluator = PhotoEvaluator(device_name="auto")
 
     ev_blown = evaluator.evaluate(sample_images["blown"])
-    assert "clipped_highlights" in ev_blown.flags
-    assert ev_blown.details["clipped_highlights_pct"] > 80.0
+    assert (
+        "preview_highlights" in ev_blown.flags
+        or "overexposed_as_shot" in ev_blown.flags
+        or "clipped_highlights" in ev_blown.flags
+    )
+    assert ev_blown.details.get("clipped_highlights_pct", 0) > 80.0 or ev_blown.details.get(
+        "as_shot_score", 100
+    ) < 40
 
     ev_dark = evaluator.evaluate(sample_images["dark"])
-    assert "underexposed" in ev_dark.flags or "crushed_shadows" in ev_dark.flags
+    assert (
+        "underexposed_as_shot" in ev_dark.flags
+        or "underexposed" in ev_dark.flags
+        or "crushed_shadows" in ev_dark.flags
+        or "preview_shadows" in ev_dark.flags
+    )
 
 
 def test_noise_estimation(temp_dir):

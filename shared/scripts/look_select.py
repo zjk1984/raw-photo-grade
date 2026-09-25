@@ -85,6 +85,13 @@ def extract_cues(np_rgb: np.ndarray, details: dict[str, Any] | None = None) -> d
     subj = details.get("subject_center") or [0.5, 0.5]
     subj_y = float(subj[1]) if len(subj) > 1 else 0.5
     hi_clip = float(details.get("clipped_highlights_pct") or details.get("highlight_clip_pct") or 0.0)
+    edit_lat = float(details.get("edit_latitude") or details.get("dynamic_range") or 50.0)
+    as_shot = float(details.get("as_shot_score") or 50.0)
+    underexposed = 1.0 if (
+        "underexposed_as_shot" in (details.get("flags") or [])
+        or (as_shot < 40 and edit_lat >= 70)
+    ) else 0.0
+    shallow = 1.0 if "shallow_dof" in (details.get("flags") or []) else 0.0
 
     return {
         "mean_l": mean_l,
@@ -97,6 +104,10 @@ def extract_cues(np_rgb: np.ndarray, details: dict[str, Any] | None = None) -> d
         "skin_frac": skin_frac,
         "subj_y": subj_y,
         "hi_clip": hi_clip,
+        "edit_latitude": edit_lat,
+        "as_shot": as_shot,
+        "underexposed": underexposed,
+        "shallow_dof": shallow,
     }
 
 
@@ -215,6 +226,21 @@ def _score_candidate(name: str, scene: str, cues: dict[str, float]) -> tuple[flo
             elif any(k in n for k in ("fl", "chrome")):
                 score += 1.0
                 reasons.append("mild_character")
+
+    # Eval → Look feedback: high latitude + underexposed → flat/NT/eterna
+    if cues.get("edit_latitude", 50) >= 75 and cues.get("underexposed", 0) > 0:
+        if any(k in n for k in ("nt", "neutral", "flat", "fl", "eterna")):
+            score += 2.2
+            reasons.append("latitude_under_pull")
+        elif "editorial" in n:
+            score += 1.6
+            reasons.append("latitude_under_pull")
+
+    # Shallow DOF + portrait cues → PT / Astia
+    if cues.get("shallow_dof", 0) > 0 and (scene == "portrait" or cues.get("skin_frac", 0) > 0.10):
+        if "astia" in n or (("pt" in n or "portrait" in n) and "rich" not in n):
+            score += 1.8
+            reasons.append("shallow_portrait")
 
     return score, "+".join(reasons) if reasons else "cue_tie"
 

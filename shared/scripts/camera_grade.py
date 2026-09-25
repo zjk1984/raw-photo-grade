@@ -207,6 +207,13 @@ def resolve_grade_adapter(
     exif: dict[str, Any] | None = None,
 ) -> tuple[GradeAdapter, dict[str, str]]:
     """Pick body adapter + brand from EXIF / sensor profile."""
+    if exif is None and path is not None:
+        try:
+            from raw_inspect import exiftool_tags
+
+            exif = exiftool_tags(path)
+        except Exception:
+            exif = {}
     profile, profile_reason = detect_sensor_profile_with_reason(path, exif)
     brand, brand_reason = detect_look_brand(exif, path=path)
     adapter = _PROFILE_TO_ADAPTER.get(profile.id, CAMERA_GENERIC)

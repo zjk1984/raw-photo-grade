@@ -26,6 +26,8 @@ Phone defaults keep slightly higher `noise_luma` and softer `clarity`. At develo
 EXIF body adapters add more (iPhone 17 Pro Max: stronger NR, highlight protect, lower LUT).
 Pipeline `--look auto` picks **apple** look pools from Make/Model; force with `--brand apple`.
 
+Eval → Look feedback (same as camera path): high `edit_latitude` + `underexposed_as_shot` biases NT/Flat/Eterna-class looks; `shallow_dof` + skin cues bias Astia/PT/portrait pools inside the apple brand pool.
+
 Units: exposure is EV. Everything else is roughly −100…+100 like Lightroom, but the implementation is simpler — treat numbers as taste, not as a Lightroom match.
 
 ## When to pick which look
