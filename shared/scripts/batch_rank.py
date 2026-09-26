@@ -118,8 +118,24 @@ def build_verdict_reason(result: Any) -> str:
 
     if "underexposed_as_shot" in flags:
         parts.append("直出欠曝可拉")
+    if "face_dead_highlights" in flags:
+        parts.append("脸部高光死白难救")
+    elif "face_hot_as_shot" in flags and "face_recoverable" in flags:
+        parts.append("直出脸偏亮可压后局部提细节")
+    elif "face_hot_as_shot" in flags:
+        parts.append("直出脸偏亮")
+    if "face_underexposed_as_shot" in flags:
+        fn = d.get("face_sharp_norm")
+        if fn is not None:
+            parts.append(f"脸欠曝可拉（归一锐度{float(fn):.0f}）")
+        else:
+            parts.append("脸欠曝可拉")
     if "raw_highlight_clip" in flags:
         parts.append("传感器高光难救")
+    elif "cloud_sky" in flags:
+        parts.append("天空为云（不扣分）")
+    elif "preview_highlights" in flags and "face_recoverable" in flags:
+        parts.append("背景高光偏亮（脸仍可修）")
     if "motion_risk" in flags:
         parts.append("快门偏慢")
     if "batch_promoted" in flags:

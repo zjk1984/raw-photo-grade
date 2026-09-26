@@ -26,9 +26,21 @@ Phone defaults keep slightly higher `noise_luma` and softer `clarity`. At develo
 EXIF body adapters add more (iPhone 17 Pro Max: stronger NR, highlight protect, lower LUT).
 Pipeline `--look auto` picks **apple** look pools from Make/Model; force with `--brand apple`.
 
-Eval → Look feedback (same as camera path): high `edit_latitude` + `underexposed_as_shot` biases NT/Flat/Eterna-class looks; `shallow_dof` + skin cues bias Astia/PT/portrait pools inside the apple brand pool.
+Eval → Look feedback (same as camera path): high `edit_latitude` + `underexposed_as_shot` biases NT/Flat/Eterna-class looks; `shallow_dof` + skin cues bias Astia/PT/portrait pools; **`face_hot_as_shot` / `face_underexposed_as_shot` + recoverable** biases highlight-protect or shadow-lift looks and pipeline auto face-finish (local adaptive lift after the look).
 
 Units: exposure is EV. Everything else is roughly −100…+100 like Lightroom, but the implementation is simpler — treat numbers as taste, not as a Lightroom match.
+
+## Develop order (Lightroom-aligned)
+
+Pipeline `develop_lr_stack` follows LR edit order:
+
+1. **Geometry** — straighten / crop (`--straighten`)
+2. **Global Auto Basic** — whole-frame exposure, shadows, highlight protect, slight WB
+3. **Look + Detail** — creative look / LUT / sharpen / NR (`apply_grade`)
+4. **People refine** — MediaPipe multiclass + YuNet. Scene-matched: face ≈ non-sky mid + ~0.04 (cap ~0.42), face/body/clothes EV within ~0.1, gain ≤1.75×. Mild skin nudge only.
+5. **Selective masks** — light sky/linear pull; subject fill only if crushed vs sky
+
+Do **not** jump to hard local face lifts before global auto — that creates spotlight faces and mismatched clothes.
 
 ## When to pick which look
 

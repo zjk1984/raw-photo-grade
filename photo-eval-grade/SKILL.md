@@ -25,7 +25,7 @@ python3 "$SKILL_DIR/ui/app.py"  # 启动本地可视化桌面应用 (Mac App 模
 
 ## Hard rules
 
-1. **Focus is King**: \(S_{\text{plane}} < \text{blur\_cut}'-8\) → `blurry` (ban S/A). Critical band below cut → `soft` (ban S/A, **B ok**). Exposure/ISO judged by **RAW edit latitude**, not as-shot brightness alone. Same-shoot batches apply relative ranking (`batch_promoted`).
+1. **Focus is King**: \(S_{\text{plane}} < \text{blur\_cut}'-8\) → `blurry` (ban S/A). Critical band below cut → `soft` (ban S/A, **B ok**). **People: focal plane = face**; underexposed faces are measured after luma normalize (`face_plane_norm`) so dark-as-shot ≠ soft focus — flag `face_underexposed_as_shot` (recoverable). Exposure/ISO judged by **RAW edit latitude**. Face/subject window separates **recoverable hot faces** (`face_hot_as_shot`) from dead clip (`face_dead_highlights`). Same-shoot batches apply relative ranking (`batch_promoted`).
 2. **Never delete originals automatically**: C-tier rejects are identified and organized, but never permanently deleted without explicit user instruction.
 3. **Hardware Acceleration**: Default to `--device auto` (automatically selects `mps` on Apple Silicon M4, `cuda` on NVIDIA, or `cpu`).
 4. **Fast First Pass**: Uses half-size RAW decoding for initial scoring to process 40–80 photos/minute on M4, reserving full-resolution decoding for the actual development phase.

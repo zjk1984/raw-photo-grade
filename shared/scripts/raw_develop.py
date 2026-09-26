@@ -56,6 +56,17 @@ def parse_args(looks: dict, default_look: str, description: str) -> argparse.Nam
         action="store_true",
         help="Disable EXIF body grade adapter (α7C / iPhone deltas)",
     )
+    p.add_argument(
+        "--face-finish",
+        action="store_true",
+        help="After look: local face lift (exposure/contrast/clarity on skin mask)",
+    )
+    p.add_argument(
+        "--face-finish-amount",
+        type=float,
+        default=1.0,
+        help="Face finish strength 0–1.5 (default 1.0)",
+    )
     for key in SLIDER_KEYS:
         if key == "lut_amount":
             continue
@@ -295,7 +306,8 @@ def _box_blur(img: np.ndarray, radius: int) -> np.ndarray:
 
 def _clarity(img: np.ndarray, amount: float) -> np.ndarray:
     h, w = img.shape[:2]
-    radius = max(3, int(min(h, w) * 0.012))
+    # Cap radius: at 24MP *0.012≈48 is ~3s with little extra look vs 16
+    radius = max(3, min(16, int(min(h, w) * 0.012)))
     blur = _box_blur(img, radius)
     return img + (img - blur) * amount * 1.4
 
@@ -385,7 +397,18 @@ def process_one(src: Path, dest: Path, args: argparse.Namespace, params: dict) -
             file_params = apply_adapter(params, adapter)
         except Exception as exc:
             grade_meta = {"adapter_error": str(exc)}
+    # Prefer protective highlights when finishing faces
+    if getattr(args, "face_finish", False) and float(file_params.get("highlights", 0) or 0) > -20:
+        file_params = dict(file_params)
+        file_params["highlights"] = int(min(-20, float(file_params.get("highlights", 0)) - 8))
     graded = apply_grade(rgb, file_params)
+    face_finish_meta: dict = {}
+    if getattr(args, "face_finish", False):
+        from face_recover import apply_face_finish
+
+        amt = float(getattr(args, "face_finish_amount", 1.0) or 1.0)
+        graded = apply_face_finish(graded, preset="portrait", amount=amt)
+        face_finish_meta = {"face_finish": True, "face_finish_amount": amt}
     save_image(graded, dest, args.quality, args.tiff)
     return {
         "input": str(src),
@@ -395,6 +418,7 @@ def process_one(src: Path, dest: Path, args: argparse.Namespace, params: dict) -
         "grade_adapter": grade_meta.get("adapter_id"),
         "camera_model": grade_meta.get("camera_model"),
         "brand": grade_meta.get("brand"),
+        **face_finish_meta,
     }
 
 

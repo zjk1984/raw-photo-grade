@@ -192,6 +192,38 @@ def compute_plane_field_sharpness(
             p90 = c_scores[max(0, int(len(c_scores) * 0.1))]
             plane_score = round(0.65 * plane_score + 0.35 * p90, 1)
 
+    # People: focal plane = face. Underexposed faces: measure after luma normalize.
+    face_meta: dict[str, Any] = {}
+    try:
+        from face_recover import measure_face_plane_sharpness
+
+        face_meta = measure_face_plane_sharpness(
+            np_rgb, subject_center=subject_center, preset=preset
+        )
+        if face_meta.get("use_face_plane"):
+            f_norm = float(face_meta["face_sharp_norm"])
+            f_as = float(face_meta["face_sharp_as_shot"])
+            # Prefer normalized face score when dark-as-shot under-reads edges
+            if face_meta.get("face_underexposed_as_shot") and f_norm >= f_as:
+                plane_score = round(max(plane_score, f_norm), 1)
+                plane_edge = float(face_meta.get("face_edge95_norm") or plane_edge)
+                pick_mode = "face_plane_norm"
+            elif f_norm >= plane_score * 0.92 or f_as >= plane_score * 0.95:
+                plane_score = round(max(plane_score, f_norm, f_as), 1)
+                pick_mode = "face_plane"
+            box = face_meta.get("face_box") or {}
+            if box and pick_mode.startswith("face_plane"):
+                best = {
+                    "x0": box["x0"],
+                    "y0": box["y0"],
+                    "x1": box["x1"],
+                    "y1": box["y1"],
+                    "edge95": plane_edge,
+                    "score": plane_score,
+                }
+    except Exception:
+        face_meta = {}
+
     sharp_plane = plane_score
     focus_patch = {
         "x0": round(float(best["x0"]), 4),
@@ -200,7 +232,7 @@ def compute_plane_field_sharpness(
         "y1": round(float(best["y1"]), 4),
     }
 
-    return {
+    out = {
         "sharp_plane": sharp_plane,
         "sharp_field": sharp_field,
         "edge95_plane": round(float(plane_edge), 4),
@@ -210,6 +242,10 @@ def compute_plane_field_sharpness(
         "top_patch_score": round(float(scored[0]["score"]), 1) if scored else sharp_field,
         "focus_pick_mode": pick_mode,
     }
+    for k, v in face_meta.items():
+        if k != "face_box":
+            out[k] = v
+    return out
 
 
 def blur_cut_adjusted(

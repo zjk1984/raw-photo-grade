@@ -55,14 +55,42 @@ def _load_rgb(src: Path) -> np.ndarray:
 
 
 def _maybe_straighten(graded: np.ndarray) -> np.ndarray:
-    im_graded = Image.fromarray((np.clip(graded, 0, 1) * 255.0 + 0.5).astype(np.uint8))
-    angle = tilt_angle_deg(np.asarray(im_graded))
+    # Detect tilt on a downscale — full-res Hough is slow and same angle within 0.05°
+    preview = resize_long_edge(graded, 1200)
+    im_p = Image.fromarray((np.clip(preview, 0, 1) * 255.0 + 0.5).astype(np.uint8))
+    angle = tilt_angle_deg(np.asarray(im_p))
     if abs(angle) < 0.15:
         return graded
+    im_graded = Image.fromarray((np.clip(graded, 0, 1) * 255.0 + 0.5).astype(np.uint8))
     im_graded = im_graded.rotate(angle, resample=Image.BICUBIC, expand=False, fillcolor=(0, 0, 0))
     x0, y0, x1, y1 = inscribe_rect(im_graded.width, im_graded.height, angle)
     im_graded = im_graded.crop((x0, y0, x1, y1))
     return np.asarray(im_graded, dtype=np.float32) / 255.0
+
+
+def _evals_from_json(path: Path):
+    from eval_photo import ImageEvaluation
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    results = data.get("results") or data
+    evals = []
+    for r in results:
+        evals.append(
+            ImageEvaluation(
+                path=r["path"],
+                filename=r.get("filename") or Path(r["path"]).name,
+                overall_score=float(r["overall_score"]),
+                tier=str(r["tier"]).upper(),
+                sharpness=float(r.get("sharpness") or 0),
+                dynamic_range=float(r.get("dynamic_range") or 0),
+                noise_control=float(r.get("noise_control") or 0),
+                color_harmony=float(r.get("color_harmony") or 0),
+                composition=float(r.get("composition") or 0),
+                flags=list(r.get("flags") or []),
+                details=dict(r.get("details") or {}),
+            )
+        )
+    return evals
 
 
 def main() -> int:
@@ -108,13 +136,29 @@ def main() -> int:
     parser.add_argument("--straighten", action="store_true", help="Auto-level horizon")
     parser.add_argument("--preview", action="store_true", help="Primary export long-edge 1600px (default: full-res)")
     parser.add_argument("--quality", type=int, default=92, help="JPEG export quality (default: 92)")
+    parser.add_argument(
+        "--face-finish",
+        action="store_true",
+        help="Enable LR People refine after Auto Basic + look (auto-on for face under/hot)",
+    )
+    parser.add_argument(
+        "--face-finish-amount",
+        type=float,
+        default=1.0,
+        help="Face finish strength 0–1.5 (default 1.0)",
+    )
+    parser.add_argument(
+        "--eval-json",
+        default=None,
+        help="Reuse a prior eval.py --json result (skip re-eval; much faster)",
+    )
     args = parser.parse_args()
 
     from looks import edited_dir, photo_root
 
     prefs = load_prefs()
     root = photo_root(prefs)
-    if not args.inputs:
+    if not args.inputs and not args.eval_json:
         args.inputs = [str(root)]
         print(f"==> Using default photo root: {root}", file=sys.stderr)
     out_path = Path(args.out_dir).expanduser() if args.out_dir else edited_dir(prefs)
@@ -142,57 +186,63 @@ def main() -> int:
             locked_look = None
             locked_brand = None
 
-    print(f"==> Step 1: Evaluating photos using M4/Metal GPU (device: {args.device})...", file=sys.stderr)
-    evaluator = PhotoEvaluator(device_name=args.device)
-    evaluator.preset = args.preset
+    if args.eval_json:
+        eval_path = Path(args.eval_json).expanduser()
+        print(f"==> Step 1: Loading eval from {eval_path} (skip re-eval)...", file=sys.stderr)
+        evals = _evals_from_json(eval_path)
+        print(format_table(evals), file=sys.stderr)
+    else:
+        print(f"==> Step 1: Evaluating photos using M4/Metal GPU (device: {args.device})...", file=sys.stderr)
+        evaluator = PhotoEvaluator(device_name=args.device)
+        evaluator.preset = args.preset
 
-    from eval_photo import ALL_SUPPORTED_SUFFIXES
-    skip_dirs = {"curated", "edited", "selected", "PhotoGrade_Export", "PhotoGrade_Curated"}
-    files = []
-    seen = set()
-    for inp in args.inputs:
-        p = Path(inp).expanduser()
-        if p.is_dir():
-            candidates = sorted(
-                f for f in p.iterdir()
-                if f.is_file()
-                and f.suffix in ALL_SUPPORTED_SUFFIXES
-                and not f.name.startswith(".")
-            )
-        elif p.is_file() and p.suffix in ALL_SUPPORTED_SUFFIXES:
-            candidates = [p]
-        else:
-            candidates = []
-        for f in candidates:
-            key = f.resolve()
-            if key in seen:
-                continue
-            if any(part in skip_dirs for part in f.parts):
-                continue
-            seen.add(key)
-            files.append(f)
+        from eval_photo import ALL_SUPPORTED_SUFFIXES
+        skip_dirs = {"curated", "edited", "selected", "PhotoGrade_Export", "PhotoGrade_Curated"}
+        files = []
+        seen = set()
+        for inp in args.inputs:
+            p = Path(inp).expanduser()
+            if p.is_dir():
+                candidates = sorted(
+                    f for f in p.iterdir()
+                    if f.is_file()
+                    and f.suffix in ALL_SUPPORTED_SUFFIXES
+                    and not f.name.startswith(".")
+                )
+            elif p.is_file() and p.suffix in ALL_SUPPORTED_SUFFIXES:
+                candidates = [p]
+            else:
+                candidates = []
+            for f in candidates:
+                key = f.resolve()
+                if key in seen:
+                    continue
+                if any(part in skip_dirs for part in f.parts):
+                    continue
+                seen.add(key)
+                files.append(f)
 
-    if not files:
-        sys.stderr.write("No supported photos found.\n")
-        return 1
+        if not files:
+            sys.stderr.write("No supported photos found.\n")
+            return 1
 
-    evals = []
-    for f in files:
-        try:
-            ev = evaluator.evaluate(f)
-            evals.append(ev)
-        except Exception as e:
-            sys.stderr.write(f"Error evaluating {f.name}: {e}\n")
+        evals = []
+        for f in files:
+            try:
+                ev = evaluator.evaluate(f)
+                evals.append(ev)
+            except Exception as e:
+                sys.stderr.write(f"Error evaluating {f.name}: {e}\n")
 
-    from batch_rank import apply_batch_relative_ranking, build_verdict_reason
+        from batch_rank import apply_batch_relative_ranking, build_verdict_reason
 
-    evals = apply_batch_relative_ranking(evals)
-    for ev in evals:
-        try:
-            ev.details["verdict_reason"] = build_verdict_reason(ev)
-        except Exception:
-            pass
-    print(format_table(evals), file=sys.stderr)
+        evals = apply_batch_relative_ranking(evals)
+        for ev in evals:
+            try:
+                ev.details["verdict_reason"] = build_verdict_reason(ev)
+            except Exception:
+                pass
+        print(format_table(evals), file=sys.stderr)
 
     target_tiers = {t.strip().upper() for t in args.tiers.split(",")}
     keepers = [ev for ev in evals if ev.tier in target_tiers]
@@ -211,6 +261,10 @@ def main() -> int:
     compare_dir = out_path / "look_compare"
     force_brand = None if (not args.brand or args.brand == "auto") else args.brand
 
+    from camera_grade import look_params_for_camera
+    from face_recover import should_face_finish
+    from lr_stack import develop_lr_stack
+
     for ev in keepers:
         src = Path(ev.path)
         dest_name = f"{src.stem}_graded.jpg"
@@ -224,7 +278,9 @@ def main() -> int:
         rgb_full = rgb
         if args.preview:
             rgb = resize_long_edge(rgb, 1600)
-        rgb_compare = resize_long_edge(rgb_full, 1600) if args.look_compare else rgb
+        # Suggest look always on ≤1600 — same sticky pick, far cheaper than full-res cues
+        rgb_for_suggest = resize_long_edge(rgb_full if not args.preview else rgb, 1600)
+        rgb_compare = rgb_for_suggest if args.look_compare else rgb_for_suggest
 
         exif_brand, details = _grade_context(src, ev.details)
         brand_for_file = force_brand or exif_brand
@@ -242,7 +298,7 @@ def main() -> int:
         )
 
         suggestion = suggest_look_detail(
-            rgb_compare if args.look_compare and not args.preview else rgb,
+            rgb_for_suggest,
             details,
             forced=None if args.look == "auto" else args.look,
             auto=(args.look == "auto"),
@@ -261,10 +317,27 @@ def main() -> int:
             locked_brand = brand_for_file
             print(f"  sticky lock set -> {locked_look} (brand={locked_brand})", file=sys.stderr)
 
-        from camera_grade import look_params_for_camera
-
         params, grade_meta = look_params_for_camera(look_name, path=src)
-        graded = apply_grade(rgb, params)
+        flags = list(ev.flags or [])
+        do_people = bool(args.face_finish) or should_face_finish(flags)
+        # Lightroom-ordered stack: Auto Basic → Look/Detail → People → Selective
+        graded, lr_report = develop_lr_stack(
+            rgb,
+            params,
+            flags=flags,
+            face_mean=(ev.details or {}).get("face_mean_luma"),
+            people_amount=float(args.face_finish_amount) if do_people else 0.0,
+            selective_amount=1.0 if do_people else 0.65,
+            do_people=do_people,
+            do_selective=True,
+        )
+        if do_people:
+            print(
+                f"  lr-stack stages={lr_report.get('stages')} "
+                f"people={lr_report.get('people', {}).get('mode')} "
+                f"face_ev={lr_report.get('people', {}).get('face_ev')}",
+                file=sys.stderr,
+            )
         if args.straighten:
             graded = _maybe_straighten(graded)
         save_image(graded, dest_file, quality=args.quality, tiff=False)
@@ -278,7 +351,16 @@ def main() -> int:
                 if cand not in ALL_LOOKS:
                     continue
                 alt_params, _ = look_params_for_camera(cand, path=src)
-                alt = apply_grade(rgb_compare, alt_params)
+                alt, _ = develop_lr_stack(
+                    rgb_compare,
+                    alt_params,
+                    flags=flags,
+                    face_mean=(ev.details or {}).get("face_mean_luma"),
+                    people_amount=0.0,
+                    selective_amount=0.5,
+                    do_people=False,
+                    do_selective=True,
+                )
                 tag = "PRIMARY" if cand == look_name else "ALT"
                 label = f"{tag}: {cand}"
                 alt_path = compare_dir / f"{src.stem}__{cand}.jpg"
@@ -302,6 +384,8 @@ def main() -> int:
             "brand": grade_meta.get("brand") or brand_for_file,
             "grade_adapter": grade_meta.get("adapter_id"),
             "camera_make": grade_meta.get("camera_make"),
+            "face_finish": do_people,
+            "lr_stack": lr_report.get("stages"),
             "camera_model": grade_meta.get("camera_model"),
             "sticky": suggestion.sticky or (sticky and locked_look == look_name and args.look == "auto"),
             "compare_outputs": compare_outputs,
@@ -322,6 +406,7 @@ def main() -> int:
             "locked_look": locked_look if args.look == "auto" else None,
             "locked_brand": locked_brand if args.look == "auto" else None,
             "look_compare": args.look_compare,
+            "eval_json": args.eval_json,
             "target_tiers": list(target_tiers),
             "total_evaluated": len(evals),
             "total_developed": len(developed_records),

@@ -45,40 +45,56 @@ def load_cube(path: Path | str) -> tuple[np.ndarray, int]:
 
 
 def apply_lut(rgb: np.ndarray, table: np.ndarray, size: int, amount: float = 1.0) -> np.ndarray:
-    """Apply a 3D LUT with trilinear interpolation. amount in [0, 1] blends with identity."""
+    """Apply a 3D LUT with trilinear interpolation. amount in [0, 1] blends with identity.
+
+    Processes in row tiles to keep peak memory down on full-res (24MP+) frames.
+    """
     if amount <= 0:
         return rgb
-    img = np.clip(rgb, 0.0, 1.0).astype(np.float32)
-    scaled = img * (size - 1)
-    i0 = np.floor(scaled).astype(np.int32)
-    i1 = np.minimum(i0 + 1, size - 1)
-    f = scaled - i0
+    img = np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
+    table = np.ascontiguousarray(table, dtype=np.float32)
+    h = img.shape[0]
+    out = np.empty_like(img)
+    # ~2k rows ≈ manageable working set for 8 corner samples
+    tile = 512 if h > 1500 else h
+    for y0 in range(0, h, tile):
+        y1 = min(h, y0 + tile)
+        chunk = img[y0:y1]
+        scaled = chunk * (size - 1)
+        i0 = np.floor(scaled).astype(np.int32)
+        i1 = np.minimum(i0 + 1, size - 1)
+        f = scaled - i0
 
-    r0, g0, b0 = i0[..., 0], i0[..., 1], i0[..., 2]
-    r1, g1, b1 = i1[..., 0], i1[..., 1], i1[..., 2]
-    fr, fg, fb = f[..., 0:1], f[..., 1:2], f[..., 2:3]
+        r0, g0, b0 = i0[..., 0], i0[..., 1], i0[..., 2]
+        r1, g1, b1 = i1[..., 0], i1[..., 1], i1[..., 2]
+        fr, fg, fb = f[..., 0:1], f[..., 1:2], f[..., 2:3]
 
-    # table indexed [b, g, r]
-    c000 = table[b0, g0, r0]
-    c001 = table[b1, g0, r0]
-    c010 = table[b0, g1, r0]
-    c011 = table[b1, g1, r0]
-    c100 = table[b0, g0, r1]
-    c101 = table[b1, g0, r1]
-    c110 = table[b0, g1, r1]
-    c111 = table[b1, g1, r1]
+        # table indexed [b, g, r]
+        c000 = table[b0, g0, r0]
+        c001 = table[b1, g0, r0]
+        c010 = table[b0, g1, r0]
+        c011 = table[b1, g1, r0]
+        c100 = table[b0, g0, r1]
+        c101 = table[b1, g0, r1]
+        c110 = table[b0, g1, r1]
+        c111 = table[b1, g1, r1]
 
-    c00 = c000 * (1 - fb) + c001 * fb
-    c01 = c010 * (1 - fb) + c011 * fb
-    c10 = c100 * (1 - fb) + c101 * fb
-    c11 = c110 * (1 - fb) + c111 * fb
-    c0 = c00 * (1 - fg) + c01 * fg
-    c1 = c10 * (1 - fg) + c11 * fg
-    mapped = c0 * (1 - fr) + c1 * fr
+        c00 = c000 * (1.0 - fb) + c001 * fb
+        c01 = c010 * (1.0 - fb) + c011 * fb
+        c10 = c100 * (1.0 - fb) + c101 * fb
+        c11 = c110 * (1.0 - fb) + c111 * fb
+        del c000, c001, c010, c011, c100, c101, c110, c111
+        c0 = c00 * (1.0 - fg) + c01 * fg
+        c1 = c10 * (1.0 - fg) + c11 * fg
+        del c00, c01, c10, c11
+        mapped = c0 * (1.0 - fr) + c1 * fr
+        del c0, c1
 
-    if amount >= 1.0:
-        return np.clip(mapped, 0.0, 1.0)
-    return np.clip(img * (1.0 - amount) + mapped * amount, 0.0, 1.0)
+        if amount >= 1.0:
+            out[y0:y1] = np.clip(mapped, 0.0, 1.0)
+        else:
+            out[y0:y1] = np.clip(chunk * (1.0 - amount) + mapped * amount, 0.0, 1.0)
+    return out
 
 
 def write_cube(path: Path | str, table: np.ndarray, title: str = "Generated") -> None:

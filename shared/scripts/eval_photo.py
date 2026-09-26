@@ -74,9 +74,9 @@ PRESET_WEIGHTS = {
     },
     "portrait": {
         "sharpness": 0.35,
-        "dynamic_range": 0.20,
-        "noise_control": 0.20,
-        "color_harmony": 0.15,
+        "dynamic_range": 0.25,  # face/edit latitude weighted higher
+        "noise_control": 0.18,
+        "color_harmony": 0.12,
         "composition": 0.10,
     },
     "street": {
@@ -235,10 +235,12 @@ class PhotoEvaluator:
         return focus["sharp_plane"], focus["edge95_plane"], focus
 
     def compute_dynamic_range(
-        self, np_rgb: np.ndarray, tensor_img: Any
+        self, np_rgb: np.ndarray, tensor_img: Any, *, sky: dict[str, Any] | None = None
     ) -> tuple[float, dict[str, float], list[str]]:
         """As-shot preview look (Track C) — soft flags only; RAW latitude overrides for RAW."""
-        from edit_latitude import score_as_shot_preview
+        from edit_latitude import analyze_sky_highlights, score_as_shot_preview
+
+        sky = sky if sky is not None else analyze_sky_highlights(np_rgb)
 
         if tensor_img is not None and self.device is not None:
             import torch
@@ -271,7 +273,7 @@ class PhotoEvaluator:
             mask = prob > 0
             entropy = float(-np.sum(prob[mask] * np.log2(prob[mask])))
 
-        return score_as_shot_preview(entropy, clipped_hi, clipped_sh, mean_luma)
+        return score_as_shot_preview(entropy, clipped_hi, clipped_sh, mean_luma, sky=sky)
 
     def compute_noise_control(self, np_rgb: np.ndarray, tensor_img: Any) -> tuple[float, float]:
         """Estimate noise level via high-frequency Laplacian residual in smooth areas.
@@ -378,6 +380,15 @@ class PhotoEvaluator:
         dist = np.sqrt(((yy - cy) / max(cy, 1)) ** 2 + ((xx - cx) / max(cx, 1)) ** 2)
         center_bias = np.clip(1.0 - dist * 0.55, 0.15, 1.0)
         attention = (0.55 * edge + 0.45 * sat) * center_bias
+        # People / backlight: skin chroma beats sky edges for subject lock
+        try:
+            from face_recover import _skin_mask
+
+            skin = _skin_mask(small).astype(np.float32)
+            if float(skin.mean()) >= 0.015:
+                attention = attention * 0.35 + skin * (float(attention.max()) + 1e-6) * 0.65
+        except Exception:
+            pass
         attention = attention - attention.min()
         total = float(attention.sum()) + 1e-8
         subj_y = float((attention * yy).sum() / total) / max(sh - 1, 1)
@@ -440,6 +451,13 @@ class PhotoEvaluator:
         comp_score, comp_details = self.compute_composition(np_rgb)
         subject_center = comp_details.get("subject_center")
 
+        from face_recover import analyze_face_region, face_flags_from_analysis
+        from edit_latitude import analyze_sky_highlights
+
+        face_ctx = analyze_face_region(
+            np_rgb, subject_center=subject_center, preset=self.preset
+        )
+        sky_ctx = analyze_sky_highlights(np_rgb)
         # EXIF + exposure triangle context (E0)
         exif: dict[str, Any] = {}
         exposure_ctx: dict[str, Any] = {}
@@ -470,9 +488,19 @@ class PhotoEvaluator:
         sharp_field = float(focus_details.get("sharp_field", sharpness))
         focus_patch = focus_details.get("focus_patch")
 
-        dr_score, dr_details, flags = self.compute_dynamic_range(np_rgb, tensor_img)
+        dr_score, dr_details, flags = self.compute_dynamic_range(
+            np_rgb, tensor_img, sky=sky_ctx
+        )
         noise_score, raw_noise = self.compute_noise_control(np_rgb, tensor_img)
         color_score, color_details = self.compute_color_harmony(np_rgb)
+
+        # Face / subject-plane recoverability (JPEG + RAW preview path)
+        for ff in face_flags_from_analysis(face_ctx):
+            if ff not in flags:
+                flags.append(ff)
+        dr_details = {**dr_details, **{k: v for k, v in face_ctx.items() if k != "face_box"}}
+        if face_ctx.get("face_box"):
+            dr_details["face_box"] = face_ctx["face_box"]
 
         profile = None
         raw_ctx: dict[str, Any] = {}
@@ -519,7 +547,12 @@ class PhotoEvaluator:
                 )
                 r_sharp = score_raw_sharpness(float(raw_ctx["raw_edge95"]), profile)
                 r_dr, lat_details, raw_flags = score_edit_latitude(
-                    raw_ctx, profile, preset=self.preset, exposure_ctx=exposure_ctx
+                    raw_ctx,
+                    profile,
+                    preset=self.preset,
+                    exposure_ctx=exposure_ctx,
+                    face=face_ctx,
+                    sky=sky_ctx,
                 )
                 r_noise = score_raw_noise(raw_ctx, profile)
                 r_noise = adjust_noise_for_preset(r_noise, exposure_ctx, preset=self.preset)
@@ -539,6 +572,14 @@ class PhotoEvaluator:
                 sharpness = merged["sharpness"]
                 dr_score = merged["dynamic_range"]
                 noise_score = merged["noise_control"]
+                # Face plane after RAW blend: underexposed faces keep normalized face sharp
+                if face_ctx.get("face_underexposed_as_shot") and face_ctx.get("use_face_plane"):
+                    fn = float(face_ctx.get("face_sharp_norm") or 0)
+                    if fn > sharpness:
+                        sharpness = round(fn, 1)
+                        focus_details["sharp_plane"] = sharpness
+                        focus_details["focus_pick_mode"] = "face_plane_norm"
+                        focus_details["face_sharp_after_raw_blend"] = True
                 for f in raw_flags:
                     if f not in flags:
                         flags.append(f)
@@ -611,6 +652,7 @@ class PhotoEvaluator:
             base_blur, base_soft, exposure_ctx, preset=self.preset
         )
         # Soft vs hard blur: hard_cut = blur_cut − margin (phone: wider soft band)
+        # People + underexposed face: veto uses face-normalized plane (already in sharpness)
         family = str(
             (exposure_ctx or {}).get("family")
             or (getattr(profile, "family", None) if profile else None)
@@ -618,18 +660,41 @@ class PhotoEvaluator:
         ).lower()
         hard_margin = 10.0 if family == "phone" else 8.0
         hard_cut = blur_cut - hard_margin
+        face_under = "face_underexposed_as_shot" in flags
+        face_plane_ok = bool(face_ctx.get("use_face_plane")) and float(
+            face_ctx.get("face_sharp_norm") or sharpness
+        ) >= hard_cut
+
         if sharpness < hard_cut:
-            if "blurry" not in flags:
-                flags.append("blurry")
-            overall -= 22.0
+            # Dark face with recoverable normalized edges → soft, not hard blurry
+            if face_under and face_plane_ok:
+                if "soft" not in flags:
+                    flags.append("soft")
+                if "blurry" in flags:
+                    flags = [f for f in flags if f != "blurry"]
+                overall -= 10.0
+            else:
+                if "blurry" not in flags:
+                    flags.append("blurry")
+                overall -= 22.0
         elif sharpness < blur_cut:
             if "soft" not in flags:
                 flags.append("soft")
-            overall -= 14.0
+            overall -= 14.0 if not face_under else 10.0
         elif sharpness < soft_cut:
             if "soft" not in flags:
                 flags.append("soft")
-            overall -= 10.0
+            overall -= 10.0 if not face_under else 6.0
+
+        if face_under and "face_recoverable" in flags:
+            overall -= 2.0  # recoverable underexposure — not a focus fail
+            # Mild latitude narrative reward when face plane holds after normalize
+            if float(face_ctx.get("face_sharp_norm") or 0) >= blur_cut:
+                overall += 3.0
+                if "soft" in flags and sharpness >= blur_cut:
+                    flags = [f for f in flags if f != "soft"]
+                if "face_plane_keeper" not in flags:
+                    flags.append("face_plane_keeper")
 
         if "blurry" not in flags and should_flag_shallow_dof(
             float(focus_details.get("sharp_plane", sharpness)),
@@ -663,6 +728,8 @@ class PhotoEvaluator:
 
         if "raw_highlight_clip" in flags:
             overall -= 12.0  # true sensor clip — integrity track
+        if "face_dead_highlights" in flags:
+            overall -= 14.0
         if "no_latitude" in flags:
             overall -= 10.0
         if "crushed_shadows" in flags:
@@ -672,21 +739,51 @@ class PhotoEvaluator:
             overall -= 3.0
         if "overexposed_as_shot" in flags:
             overall -= 3.0
-        if "preview_highlights" in flags:
+        # Face hot but recoverable — informational; portrait slightly rewards latitude path
+        if "face_hot_as_shot" in flags and "face_recoverable" in flags:
+            overall -= 1.0 if self.preset == "portrait" else 2.0
+            if self.preset == "portrait" and float(
+                (raw_ctx or {}).get("edit_latitude") or dr_score or 0
+            ) >= 70:
+                overall += 2.0  # keepers with face latitude
+        elif "face_hot_as_shot" in flags:
             overall -= 2.0
+        # cloud_sky: natural bright clouds — not a defect / not a score hit
+        if "cloud_sky" in flags:
+            flags = [f for f in flags if f not in {"preview_highlights", "raw_highlight_clip"}]
+        if "preview_highlights" in flags:
+            # Portrait + recoverable face: global sky glow is soft
+            if self.preset == "portrait" and "face_recoverable" in flags:
+                overall -= 1.0
+            else:
+                overall -= 2.0
         if abs(comp_details.get("tilt_angle_deg", 0.0)) >= 4.0:
             if "tilted_horizon" not in flags:
                 flags.append("tilted_horizon")
 
+        # Face plane keeper floor AFTER all soft exposure penalties
+        if (
+            "face_plane_keeper" in flags
+            and "blurry" not in flags
+            and "face_dead_highlights" not in flags
+            and float(face_ctx.get("face_sharp_norm") or sharpness) >= blur_cut
+        ):
+            overall = max(overall, 58.0)
+
         overall = round(float(np.clip(overall, 0.0, 100.0)), 1)
 
         # 4. Tier — Focus is King; soft bans S/A but allows B; hard blurry bans S/A
+        # Global raw_highlight_clip does NOT hard-block when face is recoverable
         hard_blur = "blurry" in flags
         soft_focus = "soft" in flags and sharpness < blur_cut
-        hard_integrity = hard_blur or "raw_highlight_clip" in flags or "no_latitude" in flags
+        face_ok = "face_recoverable" in flags and "face_dead_highlights" not in flags
+        clip_hard = "face_dead_highlights" in flags or (
+            "raw_highlight_clip" in flags and not face_ok
+        )
+        hard_integrity = hard_blur or clip_hard or "no_latitude" in flags
         if overall >= 85.0 and not hard_integrity and not soft_focus:
             tier = "S"
-        elif overall >= 72.0 and not hard_blur and not soft_focus:
+        elif overall >= 72.0 and not hard_blur and not soft_focus and "face_dead_highlights" not in flags:
             tier = "A"
         elif overall >= 58.0:
             tier = "B"

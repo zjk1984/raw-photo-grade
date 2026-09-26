@@ -315,7 +315,22 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                         SESSION_DATA["locked_look"] = look_name
                         SESSION_DATA["locked_brand"] = brand_for_file
                     params, grade_meta = look_params_for_camera(look_name, path=src)
-                    graded = apply_grade(rgb, params)
+                    flags = item.get("flags") or []
+                    from face_recover import should_face_finish
+                    from lr_stack import develop_lr_stack
+
+                    do_people = should_face_finish(flags) or bool(payload.get("face_finish"))
+                    details = item.get("details") or {}
+                    graded, _lr = develop_lr_stack(
+                        rgb,
+                        params,
+                        flags=flags,
+                        face_mean=details.get("face_mean_luma"),
+                        people_amount=1.0 if do_people else 0.0,
+                        selective_amount=1.0 if do_people else 0.65,
+                        do_people=do_people,
+                        do_selective=True,
+                    )
                     save_image(graded, dest, quality=92, tiff=False)
                     compare_sheet = None
                     if look_compare and suggestion.candidates:
@@ -325,7 +340,15 @@ class PhotoGradeAppHandler(BaseHTTPRequestHandler):
                             if cand not in ALL_LOOKS:
                                 continue
                             alt_params, _ = look_params_for_camera(cand, path=src)
-                            alt = apply_grade(rgb_compare, alt_params)
+                            alt, _ = develop_lr_stack(
+                                rgb_compare,
+                                alt_params,
+                                flags=flags,
+                                do_people=False,
+                                do_selective=True,
+                                people_amount=0.0,
+                                selective_amount=0.5,
+                            )
                             tag = "PRIMARY" if cand == look_name else "ALT"
                             panels.append((f"{tag}: {cand}", alt))
                         if panels:

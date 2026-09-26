@@ -30,9 +30,10 @@ Technical specifications of the multi-dimensional photo assessment algorithms us
 
 ### 1.2 Dynamic Range → Edit Latitude (`dynamic_range` ≈ \(S_{\text{lat}}\))
 - **Core Concept**: For RAW, score **recoverability** (headroom below white level, shadow floor, ISO-relative noise), not JPEG-like as-shot brightness.
-- **Track B (drives DR metric on RAW)**: `edit_latitude` from sensor levels + profile DR ceiling; preset×ISO tolerance.
-- **Track C (informational)**: `as_shot_score` from preview entropy/clipping — soft flags like `underexposed_as_shot` (light penalty, no S ban alone).
-- **Hard integrity**: `raw_highlight_clip` / `no_latitude` / dead `crushed_shadows` may block S.
+- **Track B (drives DR metric on RAW)**: `edit_latitude` from sensor levels + profile DR ceiling; preset×ISO tolerance. **Face / attention window** headroom blends in for people so as-shot hot faces with channel room stay recoverable.
+- **Track C (informational)**: `as_shot_score` from preview entropy/clipping — soft flags like `underexposed_as_shot` / `face_hot_as_shot` (light penalty, no S ban alone when recoverable).
+- **Hard integrity**: `face_dead_highlights` / `no_latitude` / unrecovered `raw_highlight_clip` may block S. Global sky clip + recoverable face → soft `preview_highlights`, not a hard ban.
+- **Develop (Lightroom order)**: Geometry → **Global Auto Basic** → Look/Detail → **People refine** (**MediaPipe selfie multiclass**: face-skin / body-skin / clothes / hair) → **Selective** (subject / sky / linear / radial). GrabCut only if the model is missing.
 
 ---
 
@@ -89,7 +90,11 @@ The base score is computed via weighted sum of normalized indicators:
 | **Hard blur** (\(S_{\text{plane}} < \text{blur\_cut}' - 8\)) | -22 pts | `blurry` | Banned from S & A |
 | **Soft / critical band** (\(\text{blur\_cut}'-8 \le S < \text{blur\_cut}'\)) | -14 pts | `soft` | Banned from S & A; **B allowed** |
 | **Noticeable Softness** (\(S_{\text{plane}} < \text{soft\_cut}\)) | -10 pts | `soft` | Score reduced (no S/A ban if ≥ blur_cut) |
-| **Sensor highlight clip** | -12 pts | `raw_highlight_clip` | Blocks S |
+| **Cloud / white sky** (upper bright, low sat) | 0 pts | `cloud_sky` | **Not a defect** — natural clouds |
+| **Sensor highlight clip** (no recoverable face, not cloud) | -12 pts | `raw_highlight_clip` | Blocks S |
+| **Face underexposed (recoverable)** | −2 pts | `face_underexposed_as_shot` | Measure face after luma normalize; **not** hard `blurry` when face plane holds; develop auto face-finish + shadow bump |
+| **Face dead highlights** | -14 pts | `face_dead_highlights` | Blocks S/A integrity |
+| **Face hot as-shot (recoverable)** | −1…−2 pts | `face_hot_as_shot` + `face_recoverable` | Info; prefer highlight-protect look + `--face-finish` |
 | **No edit latitude** | -10 pts | `no_latitude` | Blocks S |
 | **As-shot underexposed (recoverable)** | -3 pts | `underexposed_as_shot` | Informational / light |
 | **Shallow DOF** (large plane−field gap) | 0 pts | `shallow_dof` | Informational only |

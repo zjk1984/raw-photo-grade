@@ -92,6 +92,15 @@ def extract_cues(np_rgb: np.ndarray, details: dict[str, Any] | None = None) -> d
         or (as_shot < 40 and edit_lat >= 70)
     ) else 0.0
     shallow = 1.0 if "shallow_dof" in (details.get("flags") or []) else 0.0
+    flags = details.get("flags") or []
+    face_hot = 1.0 if (
+        "face_hot_as_shot" in flags
+        or float(details.get("face_mean_luma") or 0) >= 0.62
+    ) else 0.0
+    face_recoverable = 1.0 if (
+        "face_recoverable" in flags
+        or details.get("face_recoverable") is True
+    ) else 0.0
 
     return {
         "mean_l": mean_l,
@@ -108,6 +117,8 @@ def extract_cues(np_rgb: np.ndarray, details: dict[str, Any] | None = None) -> d
         "as_shot": as_shot,
         "underexposed": underexposed,
         "shallow_dof": shallow,
+        "face_hot": face_hot,
+        "face_recoverable": face_recoverable,
     }
 
 
@@ -151,13 +162,20 @@ def _score_candidate(name: str, scene: str, cues: dict[str, float]) -> tuple[flo
             elif ("pt" in n or "portrait" in n) and "rich" not in n:
                 score += 2.5
                 reasons.append("skin_protect")
-        if cues["hi_clip"] > 1.5 or cues["mean_l"] > 0.55:
+        if cues["hi_clip"] > 1.5 or cues["mean_l"] > 0.55 or cues.get("face_hot", 0) > 0:
             if "rich-tone" in n or "astia" in n:
                 score += 2.4
                 reasons.append("highlight_protect")
             elif any(k in n for k in ("sh", "pt")):
                 score += 2.0
                 reasons.append("highlight_protect")
+        if cues.get("face_hot", 0) > 0 and cues.get("face_recoverable", 0) > 0:
+            if "astia" in n or (("pt" in n or "portrait" in n) and "rich" not in n):
+                score += 2.2
+                reasons.append("face_hot_recover")
+            elif any(k in n for k in ("sh", "provia", "natural")):
+                score += 1.6
+                reasons.append("face_hot_recover")
         if cues["warm_bias"] > 0.04 and cues["mean_l"] > 0.45:
             if "nostalgic" in n or "rich-tone" in n:
                 score += 2.0
@@ -235,6 +253,12 @@ def _score_candidate(name: str, scene: str, cues: dict[str, float]) -> tuple[flo
         elif "editorial" in n:
             score += 1.6
             reasons.append("latitude_under_pull")
+
+    # Face hot + recoverable → protect highlights globally (any scene with skin)
+    if cues.get("face_hot", 0) > 0 and cues.get("face_recoverable", 0) > 0 and scene != "portrait":
+        if any(k in n for k in ("astia", "pt", "portrait", "sh", "rich-tone")):
+            score += 1.8
+            reasons.append("face_hot_recover")
 
     # Shallow DOF + portrait cues → PT / Astia
     if cues.get("shallow_dof", 0) > 0 and (scene == "portrait" or cues.get("skin_frac", 0) > 0.10):
